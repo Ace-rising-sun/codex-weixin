@@ -1,4 +1,4 @@
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { testControl } from './support.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -20,7 +20,7 @@ test('queued tasks continue after active turn and interruption targets current t
  let input=[incoming('foreign','must ignore','stranger'),incoming('1','first')];
  await writeFile(messages,JSON.stringify(input));await writeFile(outbox,'');
  await writeFile(join(dir,'account.json'),JSON.stringify({token:'test',owner:'owner',bot:'bot',baseurl:'https://ilinkai.weixin.qq.com'}));
- const child=spawn(process.execPath,['--import',preload,join(origin,'runtime/daemon.mjs')],{env:{...process.env,CODEX_WEIXIN_HOME:dir,CODEX_WEIXIN_CODEX:fake,TEST_WX_MESSAGES:messages,TEST_WX_OUTBOX:outbox},stdio:['ignore','pipe','pipe']});
+ const child=spawn(process.execPath,['--import',pathToFileURL(preload).href,join(origin,'runtime/daemon.mjs')],{env:{...process.env,CODEX_WEIXIN_HOME:dir,CODEX_WEIXIN_CODEX:fake,TEST_WX_MESSAGES:messages,TEST_WX_OUTBOX:outbox},stdio:['ignore','pipe','pipe']});
  let logs='';child.stderr.on('data',x=>logs+=x);
  const status=()=>call(dir,'status');
  async function until(predicate){for(let i=0;i<150;i++){try{const value=await status();if(predicate(value))return value;}catch{}await delay(30);}throw Error(logs);}

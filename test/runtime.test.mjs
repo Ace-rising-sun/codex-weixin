@@ -1,3 +1,4 @@
+import { isWindows, socketFor } from '../runtime/platform.mjs';
 import { fileURLToPath } from 'node:url';
 import { testControl } from './support.mjs';
 import test from 'node:test';
@@ -48,7 +49,14 @@ test('daemon uses private storage, settings persist, and a second process cannot
     const changed = await control(home, 'save', { ...status.settings, workspace: home, model: 'gpt-test', timeoutMinutes: 2 });
     assert.equal(changed.settings.model, 'gpt-test');
     assert.equal(JSON.parse(await readFile(join(home, 'settings.json'))).timeoutMinutes, 2);
-    assert.equal((await stat(join(home, 'settings.json'))).mode & 0o777, 0o600);
+    if (!isWindows) assert.equal((await stat(join(home, 'settings.json'))).mode & 0o777, 0o600);
+    if (isWindows) {
+      const rejected = await new Promise((resolve,reject) => {
+        const req=request({socketPath:socketFor(home),path:'/status',method:'POST'},response=>{response.resume();resolve(response.statusCode);});
+        req.on('error',reject);req.end('{}');
+      });
+      assert.equal(rejected,401);
+    }
     const second = start();
     const code = await new Promise(resolve => second.on('exit', resolve)); assert.notEqual(code, 0);
     assert.equal((await control(home, 'status')).settings.model, 'gpt-test');

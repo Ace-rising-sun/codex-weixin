@@ -71,7 +71,7 @@ test('outbound resolves symlinks and rejects files outside selected workspace',a
 test('a failed attachment preserves answer and a valid sibling file',async()=>{
  const directory=await mkdtemp(join(tmpdir(),'wx-output-'));await writeFile(join(directory,'a.txt'),'hello');const job={mediaDirectory:join(directory,'media')};await mkdir(job.mediaDirectory);
  try{
- const result=await prepareOutput(`说明\n\nWEIXIN_MEDIA: {"path":"${directory}/a.txt","kind":"file"}\nWEIXIN_MEDIA: {"path":"${directory}/absent","kind":"file"}`,job,{...defaults,workspace:directory},new AbortController().signal);
+ const result=await prepareOutput('说明\n\nWEIXIN_MEDIA: '+JSON.stringify({path:join(directory,'a.txt'),kind:'file'})+'\nWEIXIN_MEDIA: '+JSON.stringify({path:join(directory,'absent'),kind:'file'}),job,{...defaults,workspace:directory},new AbortController().signal);
  assert.equal(result.text,'说明');assert.equal(result.outputs.length,1);assert.equal(result.errors.length,1);
  }finally{await rm(directory,{recursive:true,force:true});}
 });
@@ -87,7 +87,7 @@ test('real bundled codecs encode/decode SILK and extract video frames', {timeout
   const voice=await encode(pcm,24000);assert.ok(voice.data.length>100);assert.ok(voice.duration>500);
   const silk=join(directory,'tone.silk');await writeFile(silk,voice.data);const wav=await voiceToWav(silk);assert.equal((await readFile(wav)).subarray(0,4).toString(),'RIFF');
   const video=join(directory,'clip.mp4');await convert(['-f','lavfi','-i','color=c=green:s=64x64:d=1','-c:v','libx264','-pix_fmt','yuv420p','-y',video]);const frames=await videoFrames(video,directory);assert.equal(frames.frames.length,6);
-  const output=await prepareOutput(`WEIXIN_MEDIA: {"path":"${path}","kind":"voice"}`,{mediaDirectory:directory},{...defaults,workspace:directory},new AbortController().signal);assert.equal(output.outputs[0].kind,'file');assert.equal(output.outputs[0].name,'voice.mp3');
+  const output=await prepareOutput('WEIXIN_MEDIA: '+JSON.stringify({path,kind:'voice'}),{mediaDirectory:directory},{...defaults,workspace:directory},new AbortController().signal);assert.equal(output.outputs[0].kind,'file');assert.equal(output.outputs[0].name,'voice.mp3');
  }finally{await rm(directory,{recursive:true,force:true});}
 });
 
