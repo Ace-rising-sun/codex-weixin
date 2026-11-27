@@ -45,7 +45,7 @@ createInterface({ input: process.stdin }).on('line', line => {
     event('turn/started', { threadId, turn: { id: turn } });
     const finish = () => {
       event('item/completed', { threadId, turnId: turn, item: { id: turn + '-comment', type: 'agentMessage', phase: 'commentary', text: 'hidden progress' } });
-      event('item/completed', { threadId, turnId: turn, item: { id: turn + '-a', type: 'agentMessage', text: process.env.TEST_MODEL_MEMORY_TEXT || 'first answer' } });
+      event('item/completed', { threadId, turnId: turn, item: { id: turn + '-a', type: 'agentMessage', text: process.env.TEST_MODEL_MEMORY_TEXT || 'first answer' + (process.env.TEST_DISTINCT_ANSWERS ? ' ' + message.params.input[0].text : '') } });
       event('item/completed', { threadId, turnId: turn, item: { id: turn + '-b', type: 'agentMessage', text: 'second answer' + (process.env.TEST_ATTACHMENT && message.params.input[0].text === 'attachment-task' ? '\\nWEIXIN_MEDIA: ' + JSON.stringify({ path: process.env.TEST_ARTIFACT, kind: 'file' }) : '') } });
       event('turn/completed', { threadId, turn: { id: turn, status: 'completed' } });
     };
@@ -120,7 +120,7 @@ globalThis.fetch = async (url, request) => {
   let child, logs = '';
   function start() { child = spawn(process.execPath, ['--import', pathToFileURL(preload).href, daemon], {
     env: { ...process.env, CODEX_WEIXIN_HOME: home, CODEX_WEIXIN_CODEX: fake, TEST_INCOMING: incomingFile, TEST_SENT: sentFile, TEST_CALLS: callsFile, TEST_RELEASE: releaseFile,
-      TEST_HOLD_MEMORY: options.holdMemory ? '1' : '', TEST_MODEL_MEMORY_TEXT: options.modelMemoryText || '', TEST_HOLD_DOWNLOAD: options.holdDownload ? '1' : '', TEST_ARTIFACT: artifact, TEST_ATTACHMENT: options.attachment ? '1' : '', TEST_HOLD_UPLOAD: options.holdUpload ? '1' : '', TEST_STALE_POLL: options.stalePoll ? '1' : '', TEST_HOLD_RECEIPT: options.holdReceipt ? '1' : '', TEST_FAIL_RESULT: options.failResult ? '1' : '', TEST_HOLD_RESULT: options.holdResult ? '1' : '', TEST_IDLE_TIMEOUT: options.idleTimeout ? '1' : '', TEST_TURN_DELAY: String(options.turnDelay || 150) },
+      TEST_HOLD_MEMORY: options.holdMemory ? '1' : '', TEST_MODEL_MEMORY_TEXT: options.modelMemoryText || '', TEST_DISTINCT_ANSWERS: options.distinctAnswers ? '1' : '', TEST_HOLD_DOWNLOAD: options.holdDownload ? '1' : '', TEST_ARTIFACT: artifact, TEST_ATTACHMENT: options.attachment ? '1' : '', TEST_HOLD_UPLOAD: options.holdUpload ? '1' : '', TEST_STALE_POLL: options.stalePoll ? '1' : '', TEST_HOLD_RECEIPT: options.holdReceipt ? '1' : '', TEST_FAIL_RESULT: options.failResult ? '1' : '', TEST_HOLD_RESULT: options.holdResult ? '1' : '', TEST_IDLE_TIMEOUT: options.idleTimeout ? '1' : '', TEST_TURN_DELAY: String(options.turnDelay || 150) },
     stdio: ['ignore', 'ignore', 'pipe'],
   });
   child.stderr.on('data', bytes => { logs += bytes; }); }

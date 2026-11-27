@@ -44,8 +44,10 @@ test('incoming ignores outbound and groups and identifies unsupported media', ()
 });
 test('settings validate path, model, sandbox and timeout', async () => {
   const valid = { ...defaults, workspace: tmpdir() };
+  assert.equal(defaults.sandbox, 'read-only');
   assert.equal((await validateSettings(valid)).timeoutMinutes, 0);
-  for (const value of [{ timeoutMinutes: -1 }, { timeoutMinutes: 1.5 }, { model: 'bad model' }, { sandbox: 'danger-full-access' }, { workspace: 'relative' }, { persona: 'a'.repeat(4001) }]) await assert.rejects(validateSettings({ ...valid, ...value }));
+  assert.equal((await validateSettings({ ...valid, sandbox: 'danger-full-access' })).sandbox, 'danger-full-access');
+  for (const value of [{ timeoutMinutes: -1 }, { timeoutMinutes: 1.5 }, { model: 'bad model' }, { sandbox: 'invalid' }, { workspace: 'relative' }, { persona: 'a'.repeat(4001) }]) await assert.rejects(validateSettings({ ...valid, ...value }));
 });
 
 
@@ -87,4 +89,45 @@ test('malformed inbound items cannot poison a batch or invent a duplicate id', (
   assert.equal(incoming({ ...message, item_list: [null, { type: 1, text_item: { text: 'kept' } }] }).text, 'kept');
   assert.equal(incoming({ ...message, message_id: {} }).id, '');
   assert.equal(incoming({ ...message, message_id: Number.MAX_SAFE_INTEGER + 1 }).id, '');
+});
+
+test('send records exact server ids and keeps zero-code acceptance distinct from client delivery', async () => {
+  const submissions = [];
+  const requests = [];
+  const responses = ['{"message_id":7532096231462383101}', '{"ret":0}', '{}'];
+  const client = new Weixin({ token: 'private' }, async (_, request) => {
+    requests.push(request);
+    return new Response(responses.shift());
+  }, async submission => { submissions.push(submission); });
+  const result = await client.sendItem('owner', 'context', { type: 1, text_item: { text: 'hello' } });
+  assert.equal(result.message_id, '7532096231462383101');
+  assert.deepEqual(submissions.map(item => item.status), ['sending', 'accepted']);
+  assert.equal(submissions[1].messageId, result.message_id);
+  assert.equal(submissions[0].clientId, JSON.parse(requests[0].body).msg.client_id);
+  const version = JSON.parse(requests[0].body).base_info.channel_version;
+  const [major, minor, patch] = version.split('.').map(Number);
+  assert.equal(Number(requests[0].headers['iLink-App-ClientVersion']), (major << 16) | (minor << 8) | patch);
+  await client.send('owner', 'context', 'accepted without a message id');
+  assert.equal(submissions.at(-1).status, 'accepted');
+  assert.equal(submissions.at(-1).messageId, undefined);
+  await assert.rejects(client.send('owner', 'context', 'invalid response'), /未返回有效确认/);
+  assert.equal(submissions.at(-1).status, 'unknown');
+  assert.equal(requests.length, 3);
+  assert.doesNotMatch(JSON.stringify(submissions), /private|context|hello|accepted without/);
+});
+
+test('send failures remain durable and are submitted once', async () => {
+  for (const response of [{ errcode: -14 }, null]) {
+    const submissions = [];
+    let attempts = 0;
+    const client = new Weixin({ token: 'private' }, async () => {
+      attempts++;
+      if (!response) throw new Error('connection closed');
+      return Response.json(response);
+    }, async submission => { submissions.push(submission); });
+    await assert.rejects(client.send('owner', 'context', 'test'));
+    assert.equal(attempts, 1);
+    assert.equal(submissions.at(-1).status, response ? 'rejected' : 'unknown');
+    assert.ok(submissions.at(-1).finishedAt >= submissions[0].submittedAt);
+  }
 });

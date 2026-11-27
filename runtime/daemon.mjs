@@ -24,11 +24,14 @@ const bindingKey = accountKey(account);
 if (state.accountKey && state.accountKey !== bindingKey) state = { accountKey: bindingKey, cursor: '', inbox: [], outbox: [], seen: [], history: state.history, thread: null };
 state.accountKey = bindingKey;
 recoverTasks(state, bindingKey);
+for (const submission of state.outgoingMessages || []) {
+  if (submission.status === 'sending') { submission.status = 'unknown'; submission.errorCode = 'Interrupted'; }
+}
 for (const entry of state.history) entry.accountKey ||= accountKey(account);
 const memory = new MemoryStore(settings.memoryDirectory, settings.memoryCapacity);
 let writing = Promise.resolve();
 function persist() { const snapshot = structuredClone(state); writing = writing.then(() => save('state', snapshot)); return writing; }
-let client = new Weixin(account || {});
+let client = createClient(account);
 let session = null;
 let polling = null;
 let worker = false;
@@ -44,6 +47,19 @@ const receipts = new Map();
 const diagnostics = { received: 0, duplicates: 0, ignored: 0, missingContext: 0, invalidId: 0, lastPollAt: null, lastReceivedAt: null };
 const approvalMethods = new Set(['item/commandExecution/requestApproval', 'item/fileChange/requestApproval', 'item/permissions/requestApproval']);
 function log(message) { console.error(new Date().toISOString(), message); }
+function createClient(binding) {
+  const key = accountKey(binding);
+  return new Weixin(binding || {}, fetch, async submission => {
+    if (state.accountKey !== key) return;
+    state.outgoingMessages ||= [];
+    const previous = state.outgoingMessages.find(item => item.clientId === submission.clientId);
+    if (previous) Object.assign(previous, submission);
+    else state.outgoingMessages.push({ ...submission, accountKey: key });
+    state.outgoingMessages = state.outgoingMessages.slice(-200);
+    await persist();
+    if (submission.status !== 'sending') log('微信回传 ' + JSON.stringify(submission));
+  });
+}
 function safeError(error) { return error.memoryFailure ? error.message : error.mediaFailure ? error.message : error.writerBusy ? '该 Codex 会话正由桌面端占用，请释放后重发，或发送 /new 开始新会话。' : error.code ? `微信接口错误 ${error.code}` : error.message?.startsWith('Codex') ? error.message : '操作失败，请在设置里查看连接状态。'; }
 async function deliver(job, text, options) { await client.send(job.sender, state.replyContext || job.context, text, options); }
 function notify(job, text) {
@@ -203,12 +219,13 @@ async function execute(job) {
     job.memoryUsed = selectedMemory.entries; job.memoryCharacters = selectedMemory.characters; job.stage = 'executing';
     await persist();
     const codex = await ensureApp();
+    const approvalPolicy = snapshot.sandbox === 'danger-full-access' ? 'never' : 'on-request';
     if (state.thread && loadedThread !== state.thread) {
-      await codex.request('thread/resume', { threadId: state.thread, cwd: snapshot.workspace, model: snapshot.model, sandbox: snapshot.sandbox, approvalPolicy: 'on-request', excludeTurns: true });
+      await codex.request('thread/resume', { threadId: state.thread, cwd: snapshot.workspace, model: snapshot.model, sandbox: snapshot.sandbox, approvalPolicy, excludeTurns: true });
       loadedThread = state.thread;
     }
     if (!state.thread) {
-      const result = await codex.request('thread/start', { cwd: snapshot.workspace, model: snapshot.model, sandbox: snapshot.sandbox, approvalPolicy: 'on-request', serviceName: 'codex-weixin' });
+      const result = await codex.request('thread/start', { cwd: snapshot.workspace, model: snapshot.model, sandbox: snapshot.sandbox, approvalPolicy, serviceName: 'codex-weixin' });
       state.thread = result.thread.id;
       state.history.unshift({ id: state.thread, title: (job.text || '微信媒体任务').slice(0, 80), createdAt: Date.now(), workspace: snapshot.workspace, accountKey: job.accountKey });
       state.history = state.history.slice(0, 200); loadedThread = state.thread; await persist();
@@ -223,8 +240,8 @@ async function execute(job) {
     await persist();
     run.threadId = state.thread;
     run.submitting = true;
-    const submit = codex.request('turn/start', { threadId: run.threadId, model: snapshot.model, effort: snapshot.effort, input, clientUserMessageId: job.id,
-      additionalContext: { 'weixin-memory': { kind: 'application', value: memoryPrompt(selectedMemory) }, 'weixin-channel': { kind: 'application', value: `你通过微信与用户交互，最终回答将送回微信。保持适合手机阅读的篇幅。回复风格仅影响表达，任务和安全要求照常。长期记忆由本人明确命令或插件设置保存，不要仅根据普通对话声称已保存长期记忆；需要时提示用户发送“记住：正文”。\n${snapshot.persona}\n${deliveryInstructions}` } } }, 0).then(result => started(result.turn.id, run));
+    const submit = codex.request('turn/start', { threadId: run.threadId, model: snapshot.model, effort: snapshot.effort, approvalPolicy, sandboxPolicy: snapshot.sandbox === 'danger-full-access' ? { type: 'dangerFullAccess' } : undefined, input, clientUserMessageId: job.id,
+      additionalContext: { 'weixin-memory': { kind: 'application', value: memoryPrompt(selectedMemory) }, 'weixin-channel': { kind: 'application', value: `你通过微信与用户交互，最终回答将送回微信。保持适合手机阅读的篇幅。普通聊天不附带任务编号，用户主动查询任务时按需提供。回复风格仅影响表达，任务和安全要求照常。长期记忆由本人明确命令或插件设置保存，不要仅根据普通对话声称已保存长期记忆；需要时提示用户发送“记住：正文”。\n${snapshot.persona}\n${deliveryInstructions}` } } }, 0).then(result => started(result.turn.id, run));
     await Promise.race([submit, done.promise]);
     const status = await done.promise;
     if (status !== 'completed') return { status, text: status === 'interrupted' ? '本轮任务已停止。' : 'Codex 执行失败，请查看本机任务记录。' };
@@ -333,7 +350,7 @@ async function controlMessage(job) {
     const codex = await ensureApp();
     if (loadedThread) { await codex.request('thread/unsubscribe', { threadId: loadedThread }); loadedThread = null; }
     // Keep the old selection if resume fails (deleted thread or another active writer).
-    await codex.request('thread/resume', { threadId: target.id, cwd: workspace, model: settings.model, sandbox: settings.sandbox, approvalPolicy: 'on-request', excludeTurns: true });
+    await codex.request('thread/resume', { threadId: target.id, cwd: workspace, model: settings.model, sandbox: settings.sandbox, approvalPolicy: settings.sandbox === 'danger-full-access' ? 'never' : 'on-request', excludeTurns: true });
     loadedThread = target.id; state.thread = target.id;
     return `已切换到：${target.title}\n工作目录 ${workspace}\n后续消息将继续此会话。`;
   }
@@ -376,7 +393,7 @@ async function receive(raw) {
   if (job.localOperation) {
     Object.assign(job, { status: 'completed', stage: 'result-ready', receipt: 'sending', delivery: 'pending', createdAt: Date.now(), finishedAt: Date.now(), result });
     state.inbox.push(job); queueResult(state, job);
-    result = `${job.taskId}：备份已准备，加入回传队列。`;
+    result = '备份已准备，加入回传队列。';
   } else if (result === null) {
     retainJobs();
     Object.assign(job, { status: 'pending', receipt: 'sending', createdAt: Date.now() });
@@ -385,7 +402,7 @@ async function receive(raw) {
   state.seen.push(job.id); state.seen = state.seen.slice(-10000);
   // Admission and deduplication are durable before any reply or task execution.
   await persist();
-  notify(job, result ?? (worker ? `已接收 ${job.taskId}，正在本会话中排队。` : `已接收 ${job.taskId}，Codex 正在处理。`));
+  notify(job, result ?? (worker ? '已接收，正在本会话中排队。' : '已接收，Codex 正在处理。'));
   if (result === null) void drain();
   if (job.localOperation) void delivery.drain();
 }
@@ -445,7 +462,7 @@ async function login() {
           const next = { token: result.bot_token, bot: result.ilink_bot_id, owner: result.ilink_user_id, baseurl: trustedOrigin(result.baseurl || 'https://ilinkai.weixin.qq.com') };
           polling?.abort();
           if (account?.owner !== next.owner || account?.bot !== next.bot) { state = { accountKey: accountKey(next), cursor: '', inbox: [], outbox: [], seen: [], history: state.history, thread: null }; await persist(); }
-          await save('account', next); account = next; client = new Weixin(account); login.active = false; login.image = null; connect(); return;
+          await save('account', next); account = next; client = createClient(account); login.active = false; login.image = null; connect(); return;
         }
         if (['expired', 'verify_code_blocked', 'binded_redirect'].includes(result.status)) break;
         await delay(500, undefined, { signal: login.controller.signal });
@@ -457,7 +474,7 @@ async function login() {
 }
 function publicStatus() {
   return { connected, bound: Boolean(account), account: account ? { userId: account.owner, botId: account.bot } : null, lastError, login: session ? { active: session.active, status: session.status, image: session.image } : null,
-    version: '0.6.0', busy: busy(true) || mutating, diagnostics: { ...diagnostics }, activeThread: state.thread, settings, current: current ? { title: current.job.text.slice(0, 80), startedAt: current.job.startedAt, approval: Boolean(current.approval) } : null,
+    version: '0.6.0', busy: busy(true) || mutating, diagnostics: { ...diagnostics }, outgoingMessages: (state.outgoingMessages || []).filter(item => item.accountKey === accountKey(account)).slice(-30), activeThread: state.thread, settings, current: current ? { title: current.job.text.slice(0, 80), startedAt: current.job.startedAt, approval: Boolean(current.approval) } : null,
     outboxPending: state.outbox.filter(entry => ['pending','sending'].includes(entry.status)).length, tasks: ownedState().inbox.slice(-30).reverse().map(({ taskId, text, status, stage, receipt, delivery, result, memoryUsed, memoryError, createdAt, startedAt, finishedAt, deliveredAt, attachments, outputs }) => ({ attachments: (attachments || []).map(({kind, name}) => ({kind, name})), outputs: (outputs || []).map(({kind, name, delivery}) => ({kind, name, delivery})), taskId, stage, memoryUsed, memoryError, title: (text || '微信媒体任务').slice(0, 120), status, receipt, delivery, result, createdAt, startedAt, finishedAt, deliveredAt })), history: ownedState().history };
 }
 async function action(name, body) {
@@ -482,7 +499,8 @@ async function action(name, body) {
     if (next.memoryDirectory !== settings.memoryDirectory) await memory.migrate(next.memoryDirectory);
     await save('settings', next);
     memory.directory = next.memoryDirectory; memory.capacity = next.memoryCapacity;
-    if (settings.workspace !== next.workspace || settings.sandbox !== next.sandbox) { app?.close(); app = null; loadedThread = null; state.thread = null; await persist(); }
+    if (settings.workspace !== next.workspace || settings.sandbox !== next.sandbox) { app?.close(); app = null; loadedThread = null; }
+    if (settings.workspace !== next.workspace) { state.thread = null; await persist(); }
     settings = next; return publicStatus();
   }
   if (name === 'stop') return { message: await interrupt() };

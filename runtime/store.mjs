@@ -26,7 +26,7 @@ export async function validateSettings(value) {
   if (typeof result.model !== 'string' || !/^[a-zA-Z0-9][a-zA-Z0-9._:/-]{0,127}$/.test(result.model)) throw new Error('模型 ID 无效');
   if (!['low', 'medium', 'high', 'xhigh'].includes(result.effort)) throw new Error('推理强度无效');
   if (!Number.isInteger(result.timeoutMinutes) || result.timeoutMinutes < 0 || result.timeoutMinutes > 1440) throw new Error('执行时限应为 0 到 1440 分钟');
-  if (!['read-only', 'workspace-write'].includes(result.sandbox)) throw new Error('执行权限无效');
+  if (!['read-only', 'workspace-write', 'danger-full-access'].includes(result.sandbox)) throw new Error('执行权限无效');
   if (typeof result.persona !== 'string' || result.persona.length > 4000) throw new Error('人设最多 4000 字');
   if (!Number.isInteger(result.maxMediaMb) || result.maxMediaMb < 1 || result.maxMediaMb > 100) throw new Error('附件大小限制应为 1 到 100 MB');
   result.memoryDirectory = memoryDirectory(result.memoryDirectory);

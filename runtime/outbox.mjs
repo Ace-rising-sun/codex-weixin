@@ -8,7 +8,7 @@ export function queueResult(state, job, { kind = 'initial', indexes = [] } = {})
   const outputs = kind === 'initial' ? job.outputs || [] : indexes.map(index => job.outputs[index]);
   const entry = { id: randomUUID(), taskId: job.taskId, accountKey: job.accountKey, kind, status: 'pending', createdAt: Date.now(),
     outputs: outputs.map(output => ({ ...output, delivery: 'pending' })),
-    parts: splitText(kind === 'initial' ? `任务 ${job.taskId}\n${job.result}` : `任务 ${job.taskId}：按你的明确请求再次发送附件。`).map(text => ({ text, delivery: 'pending' })) };
+    parts: splitText(kind === 'initial' ? job.result : '已按你的明确请求再次发送附件。').map(text => ({ text, delivery: 'pending' })) };
   state.outbox.push(entry);
   return entry;
 }
@@ -43,7 +43,7 @@ export class Outbox {
           } catch (error) {
             output.delivery = output.delivery === 'sending' ? 'unknown' : 'failed';
             output.error = error.message === '已过期或缺失' || error.message === '不可用' ? error.message : '附件发送失败或投递未确认';
-            errors.push(`附件 ${index + 1}：${output.error}。可用 /result ${job.taskId} 查看。`);
+            errors.push(`附件 ${index + 1}：${output.error}。可在插件任务记录中查看。`);
           }
           if (entry.kind === 'initial') Object.assign(job.outputs[index], { delivery: output.delivery, error: output.error });
           await this.persist();
