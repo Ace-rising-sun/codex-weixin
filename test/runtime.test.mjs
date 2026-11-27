@@ -66,3 +66,29 @@ test('daemon uses private storage, settings persist, and a second process cannot
     await rm(home, { recursive: true, force: true });
   }
 });
+
+test('native memory tools preserve large Unicode backups and remain app-only', { timeout: 15000 }, async t => {
+  const { fixture } = await import('./bridge-fixture.mjs');
+  const { accountKey } = await import('../runtime/tasks.mjs');
+  const { randomUUID } = await import('node:crypto');
+  const f = await fixture(t);
+  const child = spawn(process.execPath, [fileURLToPath(new URL('../runtime/settings.mjs', import.meta.url))], { env: { ...process.env, CODEX_WEIXIN_HOME: f.home }, stdio: ['pipe','pipe','inherit'] });
+  t.after(() => child.kill());
+  const call = rpc(child);
+  await call('initialize', { protocolVersion: '2025-11-25' });
+  const listed = await call('tools/list');
+  assert.deepEqual(listed.result.tools.find(tool => tool.name === 'weixin.memory.change')._meta.ui.visibility, ['app']);
+  const entries = Array.from({length:100}, (_,index) => ({ id:'M'+(index+1).toString(36).toUpperCase().padStart(4,'0'), text:'中文字🌞'.repeat(40), tags:['备份'], mode:'relevant', updatedAt:index+1 }));
+  const document = JSON.stringify({version:1,accountKey:accountKey({owner:'owner',bot:'bot'}),nextId:101,entries,operations:[]});
+  const restored = await call('tools/call', {name:'weixin.memory.change',arguments:{requestId:randomUUID(),action:'restore',document}});
+  assert.equal(restored.result.isError,undefined);
+  const response = await call('tools/call',{name:'weixin.memory.list',arguments:{}});
+  assert.deepEqual(response.result.structuredContent.entries.map(entry=>entry.text), entries.map(entry=>entry.text));
+  const exported = await call('tools/call',{name:'weixin.memory.export',arguments:{format:'json'}});
+  assert.deepEqual(JSON.parse(exported.result.structuredContent.text).entries, entries);
+  const page = await call('resources/read',{uri:'ui://codex-weixin/settings'});
+  assert.match(page.result.contents[0].text,/id="memory-form"/);
+  assert.match(page.result.contents[0].text,/固定助手记忆目录/);
+  await f.command('/memory list --page 2',/第 2\/10 页/);
+  assert.equal((await f.calls()).length,0);
+});

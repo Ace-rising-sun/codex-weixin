@@ -23,7 +23,7 @@ export class Weixin {
     if (authenticated) {
       if (!this.account.token) throw new Error('请先扫码连接微信');
       headers.Authorization = `Bearer ${this.account.token}`;
-      body = { ...body, base_info: { channel_version: '0.5.0', bot_agent: 'CodexWeixin/0.5.0' } };
+      body = { ...body, base_info: { channel_version: '0.6.0', bot_agent: 'CodexWeixin/0.6.0' } };
     }
     const response = await this.fetcher(trustedOrigin(origin || this.account.baseurl || 'https://ilinkai.weixin.qq.com') + path, { method: body === undefined ? 'GET' : 'POST', headers, body: body === undefined ? undefined : JSON.stringify(body), redirect: 'error', signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(timeout)]) : AbortSignal.timeout(timeout) });
     if (!response.ok) throw Object.assign(new Error(`微信接口 HTTP ${response.status}`), { code: response.status });

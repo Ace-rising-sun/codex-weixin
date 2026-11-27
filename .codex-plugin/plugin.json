@@ -1,6 +1,6 @@
 {
   "name": "codex-weixin",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "通过本人微信 ClawBot 向本机 Codex 发送文字、图片、语音、视频与文件并接收结果。",
   "author": {
     "name": "Ace"

@@ -49,7 +49,7 @@ export class Codex {
     });
 
     this.ready = this.request('initialize', {
-      clientInfo: { name: 'codex_weixin', title: 'Codex Weixin', version: '0.5.0' },
+      clientInfo: { name: 'codex_weixin', title: 'Codex Weixin', version: '0.6.0' },
       capabilities: { experimentalApi: true },
     }).then(() => this.#write({ method: 'initialized' }));
   }

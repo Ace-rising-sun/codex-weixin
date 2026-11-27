@@ -148,7 +148,7 @@
   element('search').addEventListener('input', render);
   (async () => {
     try {
-      await request('ui/initialize', { appInfo: { name: 'weixin-history', version: '0.5.0' }, appCapabilities: {}, protocolVersion: '2026-01-26' });
+      await request('ui/initialize', { appInfo: { name: 'weixin-history', version: '0.6.0' }, appCapabilities: {}, protocolVersion: '2026-01-26' });
       window.parent.postMessage({ jsonrpc: '2.0', method: 'ui/notifications/initialized', params: {} }, '*');
       await refresh();
     } catch (error) { element('notice').textContent = error.message; }

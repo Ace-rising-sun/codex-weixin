@@ -82,8 +82,9 @@ export function inferKind(path) {
 export async function snapshotFile(path, workspace, directory, maxBytes) {
   if (!isAbsolute(path)) throw mediaError('发送附件需要本机绝对路径');
   const [resolved, root, privateRoot] = await Promise.all([realpath(path), realpath(workspace), realpath(home).catch(error => { if (error.code === 'ENOENT') return resolve(home); throw error; })]);
-  if (inside(privateRoot, resolved) && !inside(mediaRoot, resolved)) throw mediaError('不能将插件凭证和内部状态作为附件发送');
-  if (!inside(root, resolved) && !inside(mediaRoot, resolved)) throw mediaError('发送的文件须位于工作目录或本次媒体目录内');
+  const privateMediaRoot = join(privateRoot, 'media');
+  if (inside(privateRoot, resolved) && !inside(privateMediaRoot, resolved)) throw mediaError('不能将插件凭证和内部状态作为附件发送');
+  if (!inside(root, resolved) && !inside(privateMediaRoot, resolved)) throw mediaError('发送的文件须位于工作目录或本次媒体目录内');
   const file = await open(resolved, constants.O_RDONLY | constants.O_NOFOLLOW);
   try {
     const info = await file.stat();
