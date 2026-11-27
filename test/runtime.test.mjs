@@ -60,7 +60,9 @@ test('daemon uses private storage, settings persist, and a second process cannot
     const second = start();
     const code = await new Promise(resolve => second.on('exit', resolve)); assert.notEqual(code, 0);
     assert.equal((await control(home, 'status')).settings.model, 'gpt-test');
-    const invalid = await control(home, 'save', { ...status.settings, workspace: home, sandbox: 'danger-full-access' }); assert.ok(invalid.error);
+    const unrestricted = await control(home, 'save', { ...status.settings, workspace: home, sandbox: 'danger-full-access' });
+    assert.equal(unrestricted.settings.sandbox, 'danger-full-access');
+    const invalid = await control(home, 'save', { ...status.settings, workspace: home, sandbox: 'invalid' }); assert.ok(invalid.error);
   } finally {
     if (child.exitCode === null && child.signalCode === null) { const exited = new Promise(resolve => child.once('exit', resolve)); child.kill(); await exited; }
     await rm(home, { recursive: true, force: true });

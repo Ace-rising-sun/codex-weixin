@@ -17,7 +17,7 @@ async function backupItem(f, content) {
 const withFile = (id, prompt, item) => ({ message_type: 1, message_id: id, from_user_id: 'owner', context_token: 'fixture-context', item_list: [{ type: 1, text_item: { text: prompt } }, item] });
 
 test('slow result delivery does not block the next Codex turn and initial results remain ordered', { timeout: 15000 }, async t => {
-  const f = await fixture(t, { holdResult: true });
+  const f = await fixture(t, { holdResult: true, distinctAnswers: true });
   await f.push('first');
   await f.until(s => !s.current && s.tasks[0]?.delivery === 'sending');
   await f.push('second');
@@ -25,11 +25,11 @@ test('slow result delivery does not block the next Codex turn and initial result
   assert.deepEqual((await f.calls()).filter(call => call.method === 'turn/start').map(call => call.params.input[0].text), ['first','second']);
   assert.equal(ready.tasks[0].delivery, 'pending');
   const firstId = ready.tasks[1].taskId, secondId = ready.tasks[0].taskId;
-  assert.equal((await f.sent()).filter(message => text(message).startsWith('任务 T')).length, 1);
+  assert.equal((await f.sent()).filter(message => text(message).startsWith('first answer')).length, 1);
   await f.command('/status '+secondId, /等待回传/);
   await f.command('/result '+firstId, /first answer/);
   await f.release(); await f.until(finished);
-  assert.deepEqual((await f.sent()).filter(message => text(message).startsWith('任务 T')).map(message => text(message).split('\n')[0]), ['任务 '+firstId,'任务 '+secondId]);
+  assert.deepEqual((await f.sent()).filter(message => text(message).startsWith('first answer')).map(message => text(message).split('\n')[0]), ['first answer first','first answer second']);
   const saved = await f.disk();
   assert.ok(saved.outbox.every(entry => entry.parts.every(part => part.delivery === 'sent')));
 });
@@ -55,16 +55,24 @@ test('slow attachment upload leaves a prepared durable snapshot while the next t
   await f.command('/result '+id, /已过期或缺失/);
 });
 test('crash recovery never reruns completed turns or automatically repeats an ambiguous result', { timeout: 15000 }, async t => {
-  const f = await fixture(t, { holdResult: true });
+  const f = await fixture(t, { holdResult: true, distinctAnswers: true });
   await f.push('first'); await f.until(s => s.tasks[0]?.delivery === 'sending');
-  await f.push('second'); const before = await f.until(s => s.tasks.length === 2 && s.tasks.every(job => job.status === 'completed'));
+  await f.push('second');
+  const before = await f.until(async s => {
+    const saved = await f.disk();
+    return s.tasks.length === 2 && s.tasks.every(job => job.status === 'completed') &&
+      saved.outbox.length === 2 && saved.inbox.every(job => job.status === 'completed');
+  });
   const ids = before.tasks.map(job => job.taskId);
+  const submitting = before.outgoingMessages.find(message => message.status === 'sending');
+  assert.ok(submitting);
   await f.restart(); await f.release();
   const after = await f.until(s => !s.busy && s.tasks[0]?.delivery === 'sent');
+  assert.equal(after.outgoingMessages.find(message => message.clientId === submitting.clientId).status, 'unknown');
   assert.deepEqual(after.tasks.map(job => job.taskId), ids);
   assert.equal(after.tasks[1].delivery, 'unknown');
   assert.equal((await f.calls()).filter(call => call.method === 'turn/start').length, 2);
-  assert.equal((await f.sent()).filter(message => text(message).startsWith('任务 '+ids[1])).length, 1);
+  assert.equal((await f.sent()).filter(message => text(message).startsWith('first answer first')).length, 1);
   await f.command('/result '+ids[1], /投递未确认/);
   assert.equal((await f.calls()).filter(call => call.method === 'turn/start').length, 2);
 });
@@ -192,7 +200,7 @@ test('stopping a later execution does not cancel or reorder the earlier slow res
   const stopped = await f.until(s=>s.tasks[0]?.status==='interrupted');
   assert.equal(stopped.tasks[1].delivery,'sending');
   await f.release(); await f.until(finished);
-  const results = (await f.sent()).filter(message=>text(message).startsWith('任务 T'));
+  const results = (await f.sent()).filter(message=>text(message).startsWith('first answer') || text(message)==='本轮任务已停止。');
   assert.equal(results.length,2);
   assert.match(text(results[1]),/本轮任务已停止/);
   assert.equal((await f.calls()).filter(call=>call.method==='turn/interrupt').length,1);
