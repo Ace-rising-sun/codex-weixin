@@ -209,3 +209,16 @@ test('failed execution and expired voice confirmation are queryable without runn
   await f.command('/result '+failed.tasks[0].taskId,/Codex 请求失败/);
   assert.equal((await f.calls()).filter(call=>call.method==='turn/start').length,1);
 });
+
+test('memory commits are reported busy to installation guards until persistence finishes', {timeout:10000}, async t => {
+  const f=await fixture(t,{holdMemory:true});
+  const change=testControl(f.home,'memoryChange',{requestId:randomUUID(),action:'add',text:'durable before acknowledgement'});
+  await f.until(async s=>s.busy && !s.current && (await readFile(join(f.home,'release.memory'),'utf8').catch(()=>''))==='1');
+  const directory=(await f.status()).settings.memoryDirectory;
+  assert.equal(await (await import('node:fs/promises')).readdir(directory).catch(()=>null),null);
+  await f.release();
+  assert.match((await change).message,/已记住/);
+  await f.until(s=>!s.busy);
+  assert.equal((await testControl(f.home,'memoryList')).used,1);
+  assert.equal((await f.calls()).length,0);
+});

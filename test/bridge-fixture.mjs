@@ -59,9 +59,19 @@ createInterface({ input: process.stdin }).on('line', line => {
   send({ id: message.id, result });
 });`);
   const preload = join(home, 'network.mjs');
+  const memoryModule = new URL('../runtime/memory.mjs',import.meta.url).href;
   await writeFile(preload, `
 import { readFile, appendFile, access } from 'node:fs/promises';
 import { setTimeout as delay } from 'node:timers/promises';
+if (process.env.TEST_HOLD_MEMORY) {
+  const {MemoryStore}=await import(${JSON.stringify(memoryModule)});
+  const serialize=MemoryStore.prototype.serialize;
+  MemoryStore.prototype.serialize=function(action){return serialize.call(this,async()=>{
+    await appendFile(process.env.TEST_RELEASE+'.memory','1');
+    while(true){try{await access(process.env.TEST_RELEASE);break;}catch{await delay(20);}}
+    return action();
+  });};
+}
 let polls = 0, receipts = 0;
 globalThis.fetch = async (url, request) => {
   if (url.includes('/c2c/backup')) {
@@ -110,7 +120,7 @@ globalThis.fetch = async (url, request) => {
   let child, logs = '';
   function start() { child = spawn(process.execPath, ['--import', pathToFileURL(preload).href, daemon], {
     env: { ...process.env, CODEX_WEIXIN_HOME: home, CODEX_WEIXIN_CODEX: fake, TEST_INCOMING: incomingFile, TEST_SENT: sentFile, TEST_CALLS: callsFile, TEST_RELEASE: releaseFile,
-      TEST_MODEL_MEMORY_TEXT: options.modelMemoryText || '', TEST_HOLD_DOWNLOAD: options.holdDownload ? '1' : '', TEST_ARTIFACT: artifact, TEST_ATTACHMENT: options.attachment ? '1' : '', TEST_HOLD_UPLOAD: options.holdUpload ? '1' : '', TEST_STALE_POLL: options.stalePoll ? '1' : '', TEST_HOLD_RECEIPT: options.holdReceipt ? '1' : '', TEST_FAIL_RESULT: options.failResult ? '1' : '', TEST_HOLD_RESULT: options.holdResult ? '1' : '', TEST_IDLE_TIMEOUT: options.idleTimeout ? '1' : '', TEST_TURN_DELAY: String(options.turnDelay || 150) },
+      TEST_HOLD_MEMORY: options.holdMemory ? '1' : '', TEST_MODEL_MEMORY_TEXT: options.modelMemoryText || '', TEST_HOLD_DOWNLOAD: options.holdDownload ? '1' : '', TEST_ARTIFACT: artifact, TEST_ATTACHMENT: options.attachment ? '1' : '', TEST_HOLD_UPLOAD: options.holdUpload ? '1' : '', TEST_STALE_POLL: options.stalePoll ? '1' : '', TEST_HOLD_RECEIPT: options.holdReceipt ? '1' : '', TEST_FAIL_RESULT: options.failResult ? '1' : '', TEST_HOLD_RESULT: options.holdResult ? '1' : '', TEST_IDLE_TIMEOUT: options.idleTimeout ? '1' : '', TEST_TURN_DELAY: String(options.turnDelay || 150) },
     stdio: ['ignore', 'ignore', 'pipe'],
   });
   child.stderr.on('data', bytes => { logs += bytes; }); }

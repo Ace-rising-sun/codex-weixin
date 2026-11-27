@@ -39,6 +39,7 @@ let connected = false;
 let lastError = '';
 let closing = false;
 let mutation = Promise.resolve();
+let mutating = false;
 const receipts = new Map();
 const diagnostics = { received: 0, duplicates: 0, ignored: 0, missingContext: 0, invalidId: 0, lastPollAt: null, lastReceivedAt: null };
 const approvalMethods = new Set(['item/commandExecution/requestApproval', 'item/fileChange/requestApproval', 'item/permissions/requestApproval']);
@@ -59,7 +60,10 @@ function notify(job, text) {
   receipts.set(job.id, pending);
 }
 function busy(includeReceipts = false) { return worker || (includeReceipts && receipts.size > 0) || delivery.busy() || state.inbox.some(job => job.status === 'pending'); }
-function mutate(action) { const pending = mutation.then(action); mutation = pending.catch(() => {}); return pending; }
+function mutate(action) {
+  const pending = mutation.then(async () => { mutating = true; try { return await action(); } finally { mutating = false; } });
+  mutation = pending.catch(() => {}); return pending;
+}
 function ownedState() { const key = accountKey(account); return { ...state, history: state.history.filter(entry => entry.accountKey === key), inbox: state.inbox.filter(job => job.accountKey === key) }; }
 const delivery = new Outbox({ state: () => state, client: () => client, key: () => accountKey(account), context: job => state.replyContext || job.context, persist, receipt: id => receipts.get(id), onError: message => { lastError = message; log(message); } });
 function retainJobs() {
@@ -398,8 +402,7 @@ function connect() {
         connected = true; failures = 0; diagnostics.lastPollAt = Date.now();
         for (const message of batch.msgs || []) {
           if (controller.signal.aborted) break;
-          const pending = mutation.then(() => controller.signal.aborted ? undefined : receive(message));
-          mutation = pending.catch(() => {});
+          const pending = mutate(() => controller.signal.aborted ? undefined : receive(message));
           await pending;
         }
         if (controller.signal.aborted) break;
@@ -454,7 +457,7 @@ async function login() {
 }
 function publicStatus() {
   return { connected, bound: Boolean(account), account: account ? { userId: account.owner, botId: account.bot } : null, lastError, login: session ? { active: session.active, status: session.status, image: session.image } : null,
-    version: '0.6.0', busy: busy(true), diagnostics: { ...diagnostics }, activeThread: state.thread, settings, current: current ? { title: current.job.text.slice(0, 80), startedAt: current.job.startedAt, approval: Boolean(current.approval) } : null,
+    version: '0.6.0', busy: busy(true) || mutating, diagnostics: { ...diagnostics }, activeThread: state.thread, settings, current: current ? { title: current.job.text.slice(0, 80), startedAt: current.job.startedAt, approval: Boolean(current.approval) } : null,
     outboxPending: state.outbox.filter(entry => ['pending','sending'].includes(entry.status)).length, tasks: ownedState().inbox.slice(-30).reverse().map(({ taskId, text, status, stage, receipt, delivery, result, memoryUsed, memoryError, createdAt, startedAt, finishedAt, deliveredAt, attachments, outputs }) => ({ attachments: (attachments || []).map(({kind, name}) => ({kind, name})), outputs: (outputs || []).map(({kind, name, delivery}) => ({kind, name, delivery})), taskId, stage, memoryUsed, memoryError, title: (text || '微信媒体任务').slice(0, 120), status, receipt, delivery, result, createdAt, startedAt, finishedAt, deliveredAt })), history: ownedState().history };
 }
 async function action(name, body) {
@@ -510,7 +513,7 @@ const server = createServer(async (request, response) => {
     const name = request.url.slice(1);
     let result;
     if (name === 'status' || name === 'history' || name === 'stop' || name === 'pin') result = await action(name, body);
-    else { const pending = mutation.then(() => action(name, body)); mutation = pending.catch(() => {}); result = await pending; }
+    else result = await mutate(() => action(name, body));
     response.writeHead(200, { 'Content-Type': 'application/json' }); response.end(JSON.stringify(result));
   } catch (error) { response.writeHead(400, { 'Content-Type': 'application/json' }); response.end(JSON.stringify({ error: /^[\p{Script=Han}]/u.test(error.message) ? error.message : '操作失败' })); }
 });
