@@ -5,3 +5,15 @@ node_modules/
 .DS_Store
 release/
 coverage/
+
+*.local.json
+._*
+.idea/
+account.json
+control.json
+service.json
+settings.json
+state.json
+/media/
+/models/
+/plugins/

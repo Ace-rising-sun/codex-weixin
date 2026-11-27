@@ -1,36 +1,22 @@
 import { create, list } from 'tar';
 import { checkPrivacy } from './privacy.mjs';
 import {
-  cp,
   mkdir,
   mkdtemp,
   readFile,
-  readdir,
   rm,
   writeFile,
 } from "node:fs/promises";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 const root = fileURLToPath(new URL("../", import.meta.url));
-const pkg = JSON.parse(await readFile(join(root, "package.json")));
-const output = join(root, "release");
-await mkdir(output, { recursive: true });
-const stage = await mkdtemp(join(output, ".stage-"));
-const name = `codex-weixin-${pkg.version}`;
-const source = join(stage, name);
-await mkdir(source);
 const entries = [
-  ".agents",
-  ".codex-plugin",
+  ".agents/plugins/marketplace.json",
+  ".codex-plugin/plugin.json",
   ".mcp.json",
   ".gitignore",
-  "runtime",
-  "skills",
-  "test",
-  "scripts",
-  "docs",
   "package.json",
   "package-lock.json",
   "install.mjs",
@@ -40,9 +26,40 @@ const entries = [
   "CHANGELOG.md",
   "THIRD-PARTY-NOTICES.md",
 ];
+const directories = ["runtime", "skills", "test", "scripts", "docs"];
+const sourcePath =
+  /^(?:(?:runtime|test|scripts)\/[a-z0-9][a-z0-9.-]*\.(?:mjs|html)|docs\/[a-z0-9-]+\.md|skills\/[a-z0-9-]+\/SKILL\.md)$/;
+const git = (...args) =>
+  execFileSync("git", args, { cwd: root, windowsHide: true });
+const commit = git("rev-parse", "--verify", "HEAD").toString().trim();
+const paths = [...entries, ...directories];
+if (git("diff", "--name-only", "-z", commit, "--", ...paths).length)
+  throw Error("请先提交发布范围内的修改，再生成源码包。");
+
+const files = git("ls-tree", "-rz", commit, "--", ...paths)
+  .toString()
+  .split("\0")
+  .filter(Boolean)
+  .map((record) => {
+    const [metadata, path] = record.split("\t");
+    const match = /^100(644|755) blob ([a-f0-9]+)$/.exec(metadata);
+    if (!match || (!entries.includes(path) && !sourcePath.test(path)))
+      throw Error("发布清单只允许普通源码文件，请检查是否提交了本机数据。");
+    return { path, mode: Number.parseInt(match[1], 8), object: match[2] };
+  });
+
+const pkg = JSON.parse(git("show", `${commit}:package.json`).toString());
+const output = join(root, "release");
+await mkdir(output, { recursive: true });
+const stage = await mkdtemp(join(output, ".stage-"));
+const name = `codex-weixin-${pkg.version}`;
+const source = join(stage, name);
 try {
-  for (const entry of entries)
-    await cp(join(root, entry), join(source, entry), { recursive: true });
+  for (const { path, mode, object } of files) {
+    const target = join(source, path);
+    await mkdir(dirname(target), { recursive: true });
+    await writeFile(target, git("cat-file", "blob", object), { mode });
+  }
   const filename = name + ".tar.gz";
   await checkPrivacy(source);
   await create({ file: join(output, filename), cwd: stage, gzip: true, portable: true, mtime: new Date(0), noPax: true }, [name]);
