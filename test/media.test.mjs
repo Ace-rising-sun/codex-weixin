@@ -99,3 +99,8 @@ test('voice-only replies keep their spoken text when audio generation fails or c
   assert.ok(result.outputs.length === 1 || result.errors.length > 0);
  } finally { await rm(directory, { recursive: true, force: true }); }
 });
+
+test('local speech recognition runtime loads its native backend', async () => {
+ const { pipeline } = await import('@huggingface/transformers');
+ assert.equal(typeof pipeline, 'function');
+});
