@@ -97,8 +97,10 @@ test('explicit memories survive new sessions/workspaces, remain frozen within a 
   await f.until(finished);
   await f.command('/memory used '+active.tasks[0].taskId, /M0001 回答先说结论/);
   await f.command('/new', /已开始新会话/);
+  await f.until(s => !s.busy);
   const nextDirectory = join(f.home,'another-workspace'); await mkdir(nextDirectory);
   const changed = await testControl(f.home,'save',{workspace:nextDirectory,memoryCapacity:1});
+  assert.equal(changed.error,undefined);
   assert.equal(changed.settings.memoryCapacity,1);
   const usage = await testControl(f.home,'memoryList'); assert.equal(usage.used,2);
   await f.command('/remember 无法新增', /记忆已满/);
