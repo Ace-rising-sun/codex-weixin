@@ -1,4 +1,8 @@
 import { randomBytes, randomUUID } from 'node:crypto';
+import packageInfo from '../package.json' with { type: 'json' };
+
+const [major, minor, patch] = packageInfo.version.split('.').map(Number);
+const clientVersion = (major << 16) | (minor << 8) | patch;
 export function trustedOrigin(value) {
   const url = new URL(value);
   if (url.protocol !== 'https:' || url.username || url.password || url.port || !(url.hostname === 'weixin.qq.com' || url.hostname.endsWith('.weixin.qq.com'))) throw new Error('微信返回了不受信任的接口地址');
@@ -17,13 +21,13 @@ export function parseResponse(text) {
 }
 export class Weixin {
   pollTimeout = 40000;
-  constructor(account = {}, fetcher = fetch) { this.account = account; this.fetcher = fetcher; }
+  constructor(account = {}, fetcher = fetch, onSend) { this.account = account; this.fetcher = fetcher; this.onSend = onSend; }
   async call(path, body, { timeout = 40000, origin, signal, authenticated = true } = {}) {
-    const headers = { 'Content-Type': 'application/json', 'iLink-App-Id': 'bot', 'iLink-App-ClientVersion': String(1024), 'AuthorizationType': 'ilink_bot_token', 'X-WECHAT-UIN': Buffer.from(String(randomBytes(4).readUInt32BE())).toString('base64') };
+    const headers = { 'Content-Type': 'application/json', 'iLink-App-Id': 'bot', 'iLink-App-ClientVersion': String(clientVersion), 'AuthorizationType': 'ilink_bot_token', 'X-WECHAT-UIN': Buffer.from(String(randomBytes(4).readUInt32BE())).toString('base64') };
     if (authenticated) {
       if (!this.account.token) throw new Error('请先扫码连接微信');
       headers.Authorization = `Bearer ${this.account.token}`;
-      body = { ...body, base_info: { channel_version: '0.6.0', bot_agent: 'CodexWeixin/0.6.0' } };
+      body = { ...body, base_info: { channel_version: packageInfo.version, bot_agent: 'CodexWeixin/' + packageInfo.version } };
     }
     const response = await this.fetcher(trustedOrigin(origin || this.account.baseurl || 'https://ilinkai.weixin.qq.com') + path, { method: body === undefined ? 'GET' : 'POST', headers, body: body === undefined ? undefined : JSON.stringify(body), redirect: 'error', signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(timeout)]) : AbortSignal.timeout(timeout) });
     if (!response.ok) throw Object.assign(new Error(`微信接口 HTTP ${response.status}`), { code: response.status });
@@ -52,7 +56,22 @@ export class Weixin {
   }
   async sendItem(recipient, context, item, signal, timeout) {
     if (!context) throw new Error('当前聊天缺少回复凭证，请重新发送消息');
-    return this.call('/ilink/bot/sendmessage', { msg: { from_user_id: '', to_user_id: recipient, client_id: randomUUID(), message_type: 2, message_state: 2, context_token: context, item_list: [item] } }, { signal, timeout });
+    const submission = { clientId: randomUUID(), itemType: item.type, status: 'sending', submittedAt: Date.now() };
+    await this.onSend?.(structuredClone(submission));
+    try {
+      const result = await this.call('/ilink/bot/sendmessage', { msg: { from_user_id: '', to_user_id: recipient, client_id: submission.clientId, message_type: 2, message_state: 2, context_token: context, item_list: [item] } }, { signal, timeout });
+      const messageId = typeof result.message_id === 'string' && /^[1-9]\d*$/.test(result.message_id) ? result.message_id : undefined;
+      if (!messageId && result.ret !== 0 && result.errcode !== 0) throw new Error('微信发送接口未返回有效确认');
+      Object.assign(submission, { status: 'accepted', messageId, ret: result.ret, errcode: result.errcode });
+      return result;
+    } catch (error) {
+      submission.status = typeof error.code === 'number' ? 'rejected' : 'unknown';
+      submission.errorCode = error.code || error.cause?.code || error.name;
+      throw error;
+    } finally {
+      submission.finishedAt = Date.now();
+      await this.onSend?.(structuredClone(submission));
+    }
   }
   async send(recipient, context, text, { signal, timeout } = {}) {
     if (!context) throw new Error('当前聊天缺少回复凭证，请重新发送消息');
