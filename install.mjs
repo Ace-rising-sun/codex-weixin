@@ -102,7 +102,7 @@ export async function install() {
   });
   if (
     status &&
-    (status.current || status.tasks.some((item) => item.status === "pending"))
+    (status.busy || status.current || status.tasks.some((item) => item.status === "pending"))
   )
     throw new Error("微信任务正在运行，请稍后更新");
   if (!(await read("settings", null)))

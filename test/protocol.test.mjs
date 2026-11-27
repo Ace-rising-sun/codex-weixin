@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { Weixin, incoming, splitText, trustedOrigin } from '../runtime/weixin.mjs';
+import { Weixin, incoming, splitText, trustedOrigin, parseResponse } from '../runtime/weixin.mjs';
 import { validateSettings, defaults } from '../runtime/store.mjs';
 import { tmpdir } from 'node:os';
 
@@ -46,4 +46,45 @@ test('settings validate path, model, sandbox and timeout', async () => {
   const valid = { ...defaults, workspace: tmpdir() };
   assert.equal((await validateSettings(valid)).timeoutMinutes, 0);
   for (const value of [{ timeoutMinutes: -1 }, { timeoutMinutes: 1.5 }, { model: 'bad model' }, { sandbox: 'danger-full-access' }, { workspace: 'relative' }, { persona: 'a'.repeat(4001) }]) await assert.rejects(validateSettings({ ...valid, ...value }));
+});
+
+
+test('uint64 message identifiers remain distinct and quoted text is untouched', async () => {
+  const raw = '{"ret":0,"msgs":[{"message_id":18446744073709551610},{"message_id":18446744073709551611}],"text":"message_id: 18446744073709551611","msg_id":"unchanged"}';
+  const client = new Weixin({ token: 'fixture' }, async () => new Response(raw));
+  const batch = await client.updates('');
+  assert.deepEqual(batch.msgs.map(message => message.message_id), ['18446744073709551610', '18446744073709551611']);
+  assert.equal(batch.text, 'message_id: 18446744073709551611');
+  assert.equal(batch.msg_id, 'unchanged');
+  assert.equal(parseResponse('{"message_id":0}').message_id, '0');
+});
+
+test('idle poll deadlines preserve cursor and cancellation still propagates', async () => {
+  let attempts = 0;
+  const client = new Weixin({ token: 'fixture' }, async (_, request) => {
+    assert.equal(JSON.parse(request.body).get_updates_buf, 'keep-cursor');
+    if (++attempts === 1) throw new DOMException('idle', 'TimeoutError');
+    return Response.json({ msgs: [], longpolling_timeout_ms: 55000 });
+  });
+  assert.deepEqual(await client.updates('keep-cursor'), { msgs: [] });
+  await client.updates('keep-cursor');
+  assert.equal(client.pollTimeout, 60000);
+  const controller = new AbortController(); controller.abort();
+  const cancelled = new Weixin({ token: 'fixture' }, async () => { throw new DOMException('cancelled', 'TimeoutError'); });
+  await assert.rejects(cancelled.updates('', controller.signal));
+  await assert.rejects(cancelled.send('owner', 'context', 'hello'));
+});
+
+test('specific authorization errors take precedence over a generic failure', async () => {
+  const client = new Weixin({ token: 'fixture' }, async () => Response.json({ ret: -1, errcode: -14 }));
+  await assert.rejects(client.updates(''), error => error.code === -14);
+});
+
+test('malformed inbound items cannot poison a batch or invent a duplicate id', () => {
+  assert.equal(incoming(null), null);
+  const message = { message_type: 1, from_user_id: 'owner', message_id: 'valid' };
+  assert.equal(incoming({ ...message, item_list: {} }).text, '');
+  assert.equal(incoming({ ...message, item_list: [null, { type: 1, text_item: { text: 'kept' } }] }).text, 'kept');
+  assert.equal(incoming({ ...message, message_id: {} }).id, '');
+  assert.equal(incoming({ ...message, message_id: Number.MAX_SAFE_INTEGER + 1 }).id, '');
 });

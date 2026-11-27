@@ -49,7 +49,7 @@ export class Codex {
     });
 
     this.ready = this.request('initialize', {
-      clientInfo: { name: 'codex_weixin', title: 'Codex Weixin', version: '0.4.0' },
+      clientInfo: { name: 'codex_weixin', title: 'Codex Weixin', version: '0.5.0' },
       capabilities: { experimentalApi: true },
     }).then(() => this.#write({ method: 'initialized' }));
   }
@@ -63,7 +63,7 @@ export class Codex {
         callback(value);
       };
       const timer = timeout > 0
-        ? setTimeout(() => this.#pending.get(id)?.reject(new Error(`${method} 超时`)), timeout)
+        ? setTimeout(() => this.#pending.get(id)?.reject(new Error(`Codex ${method} 超时`)), timeout)
         : undefined;
       this.#pending.set(id, { resolve: settle(resolve), reject: settle(reject) });
       try {

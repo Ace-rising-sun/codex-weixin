@@ -33,7 +33,7 @@ test('queued tasks continue after active turn and interruption targets current t
   assert.equal(Object.hasOwn(value.account,'token'),false);
   input.push(incoming('3','third'));await writeFile(messages,JSON.stringify(input));
   await until(s=>s.current?.title==='third');await call(dir,'stop');
-  value=await until(s=>s.tasks[0]?.delivery==='sent'&&!s.current);
+  value=await until(s=>s.tasks[0]?.delivery==='sent'&&!s.busy);
   assert.equal(value.tasks[0].result,'本轮任务已停止。');
   const sent=(await readFile(outbox,'utf8')).trim().split('\n').map(JSON.parse);
   assert.ok(sent.every(x=>x.to_user_id==='owner'));assert.ok(!sent.some(x=>JSON.stringify(x).includes('must ignore')));
