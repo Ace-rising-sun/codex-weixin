@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { mkdtemp, writeFile, readFile, rm, mkdir } from 'node:fs/promises';
+import { mkdtemp, writeFile, readFile, appendFile, rm, mkdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -16,7 +16,7 @@ async function fixture(t, options = {}) {
   const sentFile = join(home, 'sent.jsonl');
   const callsFile = join(home, 'calls.jsonl');
   const releaseFile = join(home, 'release');
-  await Promise.all([writeFile(incomingFile, '[]'), writeFile(sentFile, ''), writeFile(callsFile, '')]);
+  await Promise.all([writeFile(incomingFile, ''), writeFile(sentFile, ''), writeFile(callsFile, '')]);
   await writeFile(join(home, 'account.json'), JSON.stringify({ token: 'fixture', owner: 'owner', bot: 'bot' }));
   await writeFile(join(home, 'settings.json'), JSON.stringify({ workspace: home }));
   if (options.state) await writeFile(join(home, 'state.json'), JSON.stringify(typeof options.state === 'function' ? await options.state(home) : options.state));
@@ -70,7 +70,7 @@ globalThis.fetch = async (url, request) => {
     }
     if (process.env.TEST_IDLE_TIMEOUT && !polls++) throw new DOMException('idle', 'TimeoutError');
     await delay(20, undefined, { signal: request.signal });
-    const input = JSON.parse(await readFile(process.env.TEST_INCOMING, 'utf8'));
+    const input = (await readFile(process.env.TEST_INCOMING, 'utf8')).split('\\n').slice(0, -1).filter(Boolean).map(JSON.parse);
     const response = { ret: 0, msgs: input.slice(Number(body.get_updates_buf || 0)), get_updates_buf: String(input.length) };
     return new Response(JSON.stringify(response).replace(/"message_id":"(\\d{17,})"/g, '"message_id":$1'));
   }
@@ -101,7 +101,7 @@ globalThis.fetch = async (url, request) => {
     }
     await rm(home, { recursive: true, force: true });
   });
-  const lines = async file => (await readFile(file, 'utf8')).trim().split('\n').filter(Boolean).map(JSON.parse);
+  const lines = async file => (await readFile(file, 'utf8')).split('\n').slice(0, -1).filter(Boolean).map(JSON.parse);
   const status = () => testControl(home, 'status');
   async function until(predicate) {
     for (let attempt = 0; attempt < 300; attempt++) {
@@ -116,9 +116,8 @@ globalThis.fetch = async (url, request) => {
     release: () => writeFile(releaseFile, ''),
     async push(text, { id = 'message-' + messages.length, sender = 'owner', context = 'fixture-context', raw } = {}) {
       messages.push(raw === undefined ? { message_type: 1, message_id: id, from_user_id: sender, context_token: context, item_list: [{ type: 1, text_item: { text } }] } : raw);
-      const temporary = incomingFile + '.next';
-      await writeFile(temporary, JSON.stringify(messages));
-      await (await import('node:fs/promises')).rename(temporary, incomingFile);
+      // Append complete records; replacing a file held by a reader races on Windows.
+      await appendFile(incomingFile, JSON.stringify(messages.at(-1)) + '\n');
     },
     async command(text, expected) {
       const before = (await lines(sentFile)).length;
