@@ -33,7 +33,7 @@ async function manage(action) {
     });
     if (
       status &&
-      (status.current || status.tasks.some((item) => item.status === "pending"))
+      (status.busy || status.current || status.tasks.some((item) => item.status === "pending"))
     )
       throw new Error("请先在微信 /stop 并等待任务结束后再停止后台");
   }

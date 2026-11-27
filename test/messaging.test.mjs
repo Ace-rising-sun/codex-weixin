@@ -84,6 +84,9 @@ globalThis.fetch = async (url, request) => {
       }
       throw new Error('receipt delivery unknown');
     }
+    if (text.startsWith('first answer') && process.env.TEST_HOLD_RESULT) {
+      while (true) { try { await access(process.env.TEST_RELEASE); break; } catch { await delay(20, undefined, { signal: request.signal }); } }
+    }
     if (text.startsWith('first answer') && process.env.TEST_FAIL_RESULT) throw new Error('result delivery unknown');
     return Response.json({ ret: 0 });
   }
@@ -91,7 +94,7 @@ globalThis.fetch = async (url, request) => {
 };`);
   const child = spawn(process.execPath, ['--import', pathToFileURL(preload).href, daemon], {
     env: { ...process.env, CODEX_WEIXIN_HOME: home, CODEX_WEIXIN_CODEX: fake, TEST_INCOMING: incomingFile, TEST_SENT: sentFile, TEST_CALLS: callsFile, TEST_RELEASE: releaseFile,
-      TEST_STALE_POLL: options.stalePoll ? '1' : '', TEST_HOLD_RECEIPT: options.holdReceipt ? '1' : '', TEST_FAIL_RESULT: options.failResult ? '1' : '', TEST_IDLE_TIMEOUT: options.idleTimeout ? '1' : '', TEST_TURN_DELAY: String(options.turnDelay || 150) },
+      TEST_STALE_POLL: options.stalePoll ? '1' : '', TEST_HOLD_RECEIPT: options.holdReceipt ? '1' : '', TEST_FAIL_RESULT: options.failResult ? '1' : '', TEST_HOLD_RESULT: options.holdResult ? '1' : '', TEST_IDLE_TIMEOUT: options.idleTimeout ? '1' : '', TEST_TURN_DELAY: String(options.turnDelay || 150) },
     stdio: ['ignore', 'ignore', 'pipe'],
   });
   let logs = ''; child.stderr.on('data', bytes => { logs += bytes; });
@@ -140,7 +143,7 @@ test('uint64 tasks and commands survive duplicate delivery, idle polls and a blo
   await f.command('/new', /等待执行和排队任务结束/);
   assert.equal((await f.status()).tasks.find(job => job.title === 'first').receipt, 'sending');
   await f.release();
-  const done = await f.until(s => s.tasks.length === 2 && s.tasks.every(job => job.delivery === 'sent'));
+  const done = await f.until(s => s.tasks.length === 2 && !s.busy && s.tasks.every(job => job.delivery === 'sent'));
   assert.equal(done.tasks.find(job => job.title === 'first').receipt, 'unknown');
   assert.ok(done.tasks.every(job => job.result === 'first answer\n\nsecond answer'));
   assert.ok(done.tasks.every(job => job.startedAt >= job.createdAt && job.deliveredAt >= job.finishedAt));
@@ -173,7 +176,7 @@ test('session list pagination, stable numbers, switching, busy guards and new co
   await f.push('continue selected');
   await f.until(s => s.current?.title === 'continue selected');
   await f.command('/use 3', /等待执行和排队任务结束/);
-  await f.until(s => s.tasks[0]?.delivery === 'sent');
+  await f.until(s => !s.busy && s.tasks[0]?.delivery === 'sent');
   assert.equal((await f.calls()).find(call => call.method === 'turn/start').params.threadId, histories[10].id);
   await f.command('/use 3', /已切换到：session 10/);
   await f.command('/use 200000', /匹配多个会话/);
@@ -184,7 +187,7 @@ test('session list pagination, stable numbers, switching, busy guards and new co
   await f.command('/use 99', /未找到/);
   await f.command('/new', /已开始新会话/);
   await f.push('fresh task');
-  const done = await f.until(s => s.tasks.length === 2 && s.tasks.every(job => job.delivery === 'sent'));
+  const done = await f.until(s => s.tasks.length === 2 && !s.busy && s.tasks.every(job => job.delivery === 'sent'));
   assert.ok(!histories.some(entry => entry.id === done.activeThread));
 });
 
@@ -198,7 +201,7 @@ test('failed switches keep the old selection and malformed commands do not becom
   await f.command('/nwe', /未知命令/);
   assert.equal((await f.status()).tasks.length, 0);
   await f.push('/tmp/example.txt');
-  await f.until(s => s.tasks[0]?.delivery === 'sent');
+  await f.until(s => !s.busy && s.tasks[0]?.delivery === 'sent');
   assert.equal((await f.calls()).find(call => call.method === 'turn/start').params.threadId, 'active-thread');
 });
 
@@ -235,12 +238,28 @@ test('a cancelled old poll cannot process messages or restore connection after l
   await f.until(async () => (await readFile(join(f.home, 'release.held'), 'utf8').catch(() => '')) === '1');
   await testControl(f.home, 'reconnect');
   await f.push('new connection task');
-  await f.until(s => s.connected && s.tasks[0]?.delivery === 'sent');
-  await testControl(f.home, 'logout');
+  await f.until(s => s.connected && !s.busy && s.tasks[0]?.delivery === 'sent');
+  const logout = await testControl(f.home, 'logout');
+  assert.equal(logout.bound, false);
   await f.release();
   await f.until(async s => !s.bound && !s.connected && (await readFile(join(f.home, 'release.returned'), 'utf8').catch(() => '')) === '1');
   const saved = await f.disk();
   assert.equal(saved.cursor, '');
   assert.equal(saved.inbox.length, 0);
   assert.equal((await f.calls()).filter(call => call.method === 'turn/start').length, 1);
+});
+
+
+test('result delivery stays busy after model completion and guards logout and session changes', { timeout: 10000 }, async t => {
+  const f = await fixture(t, { holdResult: true });
+  await f.push('deliver slowly');
+  await f.until(s => s.busy && !s.current && s.tasks[0]?.delivery === 'sending');
+  const rejected = await testControl(f.home, 'logout');
+  assert.match(rejected.error, /等待任务结束/);
+  await f.command('/new', /包含结果回传/);
+  await f.command('/status', /回传结果 是/);
+  assert.equal((await f.status()).bound, true);
+  await f.release();
+  await f.until(s => !s.busy && s.tasks[0]?.delivery === 'sent');
+  await f.command('/new', /已开始新会话/);
 });

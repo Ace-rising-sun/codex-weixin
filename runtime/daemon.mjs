@@ -204,10 +204,10 @@ async function drain() {
 async function controlMessage(job) {
   const text = job.text.trim();
   if (text === '/help') return '直接发送文字、图片、语音、视频或文件即可派任务。\n/status 查看连接与任务\n/stop 停止当前任务\n/new 开始新会话\n/list [页码] 查看会话\n/use 序号或会话ID 切换\n/history 同 /list\n/approve 验证码 批准权限\n/reject 验证码 拒绝权限';
-  if (text === '/status' || text === '/ping') return `微信已连接\n当前会话 ${state.history.find(entry => entry.id === state.thread)?.title || '新会话（待首次任务）'}\n模型 ${settings.model}\n正在执行 ${current ? '是' : '否'}\n排队 ${state.inbox.filter(x => x.status === 'pending').length}\n时限 ${settings.timeoutMinutes || '不限'}${settings.timeoutMinutes ? ' 分钟' : ''}`;
+  if (text === '/status' || text === '/ping') return `微信已连接\n当前会话 ${state.history.find(entry => entry.id === state.thread)?.title || '新会话（待首次任务）'}\n模型 ${settings.model}\n正在执行 ${current ? '是' : '否'}\n回传结果 ${worker && !current ? '是' : '否'}\n排队 ${state.inbox.filter(x => x.status === 'pending').length}\n时限 ${settings.timeoutMinutes || '不限'}${settings.timeoutMinutes ? ' 分钟' : ''}`;
   if (text === '/stop') return interrupt();
   if (text === '/new') {
-    if (busy()) return '请先等待执行和排队任务结束，再开始新会话。/stop 只停止当前任务。';
+    if (busy()) return '请先等待执行和排队任务结束（包含结果回传），再开始新会话。/stop 只停止当前任务。';
     if (loadedThread && app) { await app.request('thread/unsubscribe', { threadId: loadedThread }); loadedThread = null; }
     state.thread = null; await persist(); return '已开始新会话，下一条任务使用新的上下文。';
   }
@@ -225,7 +225,7 @@ async function controlMessage(job) {
   }
   const use = text.match(/^\/use(?:\s+(.*))?$/);
   if (use) {
-    if (busy()) return '请先等待执行和排队任务结束，再切换会话。/stop 只停止当前任务。';
+    if (busy()) return '请先等待执行和排队任务结束（包含结果回传），再切换会话。/stop 只停止当前任务。';
     const selector = use[1]?.trim();
     if (!selector) return '用法：/list 查看会话，再发送 /use 2；也支持完整会话 ID。';
     let candidates = state.history.filter(entry => entry.id === selector);
@@ -353,7 +353,7 @@ async function login() {
 }
 function publicStatus() {
   return { connected, bound: Boolean(account), account: account ? { userId: account.owner, botId: account.bot } : null, lastError, login: session ? { active: session.active, status: session.status, image: session.image } : null,
-    version: '0.5.0', diagnostics: { ...diagnostics }, activeThread: state.thread, settings, current: current ? { title: current.job.text.slice(0, 80), startedAt: current.job.startedAt, approval: Boolean(current.approval) } : null,
+    version: '0.5.0', busy: busy(), diagnostics: { ...diagnostics }, activeThread: state.thread, settings, current: current ? { title: current.job.text.slice(0, 80), startedAt: current.job.startedAt, approval: Boolean(current.approval) } : null,
     tasks: state.inbox.slice(-30).reverse().map(({ text, status, receipt, delivery, result, createdAt, startedAt, finishedAt, deliveredAt, attachments, outputs }) => ({ attachments: (attachments || []).map(({kind, name}) => ({kind, name})), outputs: (outputs || []).map(({kind, name, delivery}) => ({kind, name, delivery})), title: (text || '微信媒体任务').slice(0, 120), status, receipt, delivery, result, createdAt, startedAt, finishedAt, deliveredAt })), history: state.history };
 }
 async function action(name, body) {
