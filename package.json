@@ -1,0 +1,30 @@
+{
+  "name": "codex-weixin",
+  "version": "0.4.0",
+  "private": true,
+  "type": "module",
+  "license": "MIT",
+  "author": "Ace",
+  "engines": {
+    "node": ">=22.19"
+  },
+  "scripts": {
+    "test": "node --test test/*.test.mjs",
+    "check": "node scripts/check.mjs",
+    "install-plugin": "node install.mjs",
+    "test:platform": "node scripts/platform-smoke.mjs",
+    "package": "node scripts/package.mjs"
+  },
+  "dependencies": {
+    "@ffmpeg-installer/ffmpeg": "1.1.0",
+    "@huggingface/transformers": "3.8.1",
+    "marked": "15.0.12",
+    "qrcode": "1.5.4",
+    "sharp": "0.34.5",
+    "silk-wasm": "3.7.1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Ace-rising-sun/codex-weixin.git"
+  }
+}

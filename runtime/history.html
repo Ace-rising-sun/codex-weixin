@@ -1,0 +1,158 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>微信会话历史</title>
+  <style>
+    :root { color-scheme: light dark; font: 14px/1.6 system-ui, sans-serif; }
+    body { margin: 0; color: var(--color-text-primary, CanvasText); background: transparent; }
+    main { max-width: 840px; margin: auto; padding: 24px; }
+    header { display: flex; justify-content: space-between; align-items: center; gap: 16px; }
+    h1 { font-size: 22px; margin: 0; }
+    button, input { font: inherit; color: inherit; }
+    button { cursor: pointer; background: transparent; }
+    #refresh { border: 1px solid color-mix(in srgb, currentColor 24%, transparent); border-radius: 9px; padding: 7px 14px; }
+    input { box-sizing: border-box; width: 100%; margin-top: 22px; padding: 10px 13px; border: 1px solid color-mix(in srgb, currentColor 24%, transparent); border-radius: 10px; background: transparent; }
+    #summary, .metadata, .workspace, .preview { font-size: 13px; color: var(--color-text-secondary, currentColor); opacity: .75; }
+    #summary { margin: 12px 0; }
+    #notice { display: block; min-height: 24px; overflow-wrap: anywhere; }
+    .conversation { display: block; width: 100%; padding: 18px 14px; text-align: left; border: 0; border-bottom: 1px solid color-mix(in srgb, currentColor 14%, transparent); border-radius: 8px; }
+    .conversation:hover { background: color-mix(in srgb, currentColor 5%, transparent); }
+    .title-row { display: flex; justify-content: space-between; gap: 16px; align-items: baseline; }
+    .title { font-weight: 600; font-size: 15px; overflow-wrap: anywhere; }
+    .state { flex-shrink: 0; color: #299963; font-size: 12px; }
+    .preview { margin-top: 5px; overflow-wrap: anywhere; }
+    .metadata { margin-top: 8px; display: flex; flex-wrap: wrap; gap: 4px 18px; }
+    .workspace { margin-top: 4px; overflow-wrap: anywhere; }
+    #empty { padding: 32px 0; opacity: .75; }
+    button:disabled { opacity: .5; cursor: default; }
+    :focus-visible { outline: 2px solid #218759; outline-offset: 3px; }
+    @media(max-width: 480px) { main { padding: 16px; } .title-row { display: block; } .state { display: block; margin-top: 4px; } }
+  </style>
+</head>
+<body>
+<main>
+  <header><h1>微信会话历史</h1><button id="refresh">刷新</button></header>
+  <input id="search" type="search" aria-label="搜索会话或工作目录" placeholder="搜索会话或工作目录" autocomplete="off">
+  <p id="summary" aria-live="polite">正在读取会话</p>
+  <output id="notice" role="status" aria-live="polite"></output>
+  <div id="list"></div>
+  <p id="empty" hidden></p>
+</main>
+<script>
+  const element = id => document.getElementById(id);
+  const pending = new Map();
+  let sequence = 0;
+  let history = [];
+  let loaded = false;
+
+  function request(method, params) {
+    return new Promise((resolve, reject) => {
+      const id = ++sequence;
+      const timer = setTimeout(() => { pending.delete(id); reject(new Error('读取超时，请点击刷新重试。')); }, 45000);
+      pending.set(id, { resolve, reject, timer });
+      window.parent.postMessage({ jsonrpc: '2.0', id, method, params }, '*');
+    });
+  }
+  window.addEventListener('message', event => {
+    if (event.source !== window.parent || event.data?.jsonrpc !== '2.0') return;
+    const item = pending.get(event.data.id);
+    if (!item) return;
+    pending.delete(event.data.id);
+    clearTimeout(item.timer);
+    if (event.data.error) item.reject(new Error('无法读取会话历史，请重试。'));
+    else item.resolve(event.data.result);
+  });
+  async function tool(name, args = {}) {
+    const result = await request('tools/call', { name, arguments: args });
+    if (result.isError) throw new Error(result.content?.[0]?.text || '会话操作失败。');
+    return result.structuredContent;
+  }
+  function formatTime(value) {
+    if (!Number.isFinite(value) || value <= 0) return '时间未记录';
+    return new Intl.DateTimeFormat('zh-CN', { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(value));
+  }
+  async function openConversation(button, id) {
+    button.disabled = true;
+    element('notice').textContent = '';
+    try { await tool('weixin.history.open', { id }); }
+    catch (error) { element('notice').textContent = error.message; }
+    finally { button.disabled = false; }
+  }
+  function render() {
+    const query = element('search').value.trim().toLocaleLowerCase();
+    const matches = history.filter(entry => `${entry.title}\n${entry.workspace}\n${entry.preview}`.toLocaleLowerCase().includes(query));
+    element('summary').textContent = query ? `找到 ${matches.length} 个会话，共 ${history.length} 个` : `${history.length} 个会话`;
+    element('list').replaceChildren();
+    element('empty').hidden = !loaded || matches.length > 0;
+    element('empty').textContent = history.length ? '没有匹配的会话，试试其他关键词。' : '暂无会话。从微信发送任务后，会话会出现在这里。';
+    for (const entry of matches) {
+      const button = document.createElement('button');
+      button.className = 'conversation';
+      button.setAttribute('aria-label', `打开会话 ${entry.title}`);
+      const row = document.createElement('div');
+      row.className = 'title-row';
+      const title = document.createElement('span');
+      title.className = 'title';
+      title.textContent = entry.title;
+      row.append(title);
+      if (entry.current || entry.running) {
+        const state = document.createElement('span');
+        state.className = 'state';
+        state.textContent = entry.running ? '执行中' : '当前微信会话';
+        row.append(state);
+      }
+      button.append(row);
+      if (entry.preview && entry.preview !== entry.title) {
+        const preview = document.createElement('div');
+        preview.className = 'preview';
+        preview.textContent = entry.preview;
+        button.append(preview);
+      }
+      const metadata = document.createElement('div');
+      metadata.className = 'metadata';
+      const created = document.createElement('span');
+      created.textContent = `创建于 ${formatTime(entry.createdAt)}`;
+      metadata.append(created);
+      if (entry.updatedAt && entry.updatedAt !== entry.createdAt) {
+        const updated = document.createElement('span');
+        updated.textContent = `最近活动 ${formatTime(entry.updatedAt)}`;
+        metadata.append(updated);
+      }
+      button.append(metadata);
+      if (entry.workspace) {
+        const workspace = document.createElement('div');
+        workspace.className = 'workspace';
+        workspace.textContent = entry.workspace;
+        button.append(workspace);
+      }
+      button.addEventListener('click', () => openConversation(button, entry.id));
+      element('list').append(button);
+    }
+  }
+  async function refresh() {
+    element('refresh').disabled = true;
+    element('notice').textContent = '';
+    try {
+      const data = await tool('weixin.history.list');
+      history = data.history;
+      loaded = true;
+      render();
+    } catch (error) {
+      element('notice').textContent = error.message;
+      if (!loaded) element('summary').textContent = '未能读取会话';
+    } finally { element('refresh').disabled = false; }
+  }
+  element('refresh').addEventListener('click', refresh);
+  element('search').addEventListener('input', render);
+  (async () => {
+    try {
+      await request('ui/initialize', { appInfo: { name: 'weixin-history', version: '0.4.0' }, appCapabilities: {}, protocolVersion: '2026-01-26' });
+      window.parent.postMessage({ jsonrpc: '2.0', method: 'ui/notifications/initialized', params: {} }, '*');
+      await refresh();
+    } catch (error) { element('notice').textContent = error.message; }
+  })();
+</script>
+</body>
+</html>

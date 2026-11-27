@@ -1,0 +1,22 @@
+{
+  "name": "codex-weixin",
+  "version": "0.4.0",
+  "description": "通过本人微信 ClawBot 向本机 Codex 发送文字、图片、语音、视频与文件并接收结果。",
+  "author": {
+    "name": "Ace"
+  },
+  "skills": "./skills/",
+  "mcpServers": "./.mcp.json",
+  "requires_local_executor": true,
+  "onboardingSkill": "./skills/weixin-setup/SKILL.md",
+  "interface": {
+    "displayName": "微信 Codex",
+    "shortDescription": "在微信中使用本机 Codex",
+    "longDescription": "本人扫码连接微信 ClawBot，配置独立模型与工作目录，在私聊中收发文字、图片、音频、视频和文件。",
+    "developerName": "Ace",
+    "category": "Productivity",
+    "capabilities": [
+      "Interactive"
+    ]
+  }
+}
