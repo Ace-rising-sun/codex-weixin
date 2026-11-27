@@ -20,6 +20,8 @@ let state = await read('state', { cursor: '', inbox: [], seen: [], history: [], 
 // A crash may have happened after a tool ran. Require an explicit new request for interrupted work.
 for (const job of state.inbox) {
   if (job.status === 'running') job.status = 'interrupted';
+  if (job.receipt === 'sending') job.receipt = 'unknown';
+  if (job.delivery === 'sending' || (job.result && !job.delivery)) job.delivery = 'unknown';
   for (const output of job.outputs || []) if (output.delivery === 'sending') output.delivery = 'unknown';
 }
 let writing = Promise.resolve();
@@ -35,10 +37,26 @@ let connected = false;
 let lastError = '';
 let closing = false;
 let mutation = Promise.resolve();
+const receipts = new Map();
+const diagnostics = { received: 0, duplicates: 0, ignored: 0, missingContext: 0, invalidId: 0, lastPollAt: null, lastReceivedAt: null };
 const approvalMethods = new Set(['item/commandExecution/requestApproval', 'item/fileChange/requestApproval', 'item/permissions/requestApproval']);
 function log(message) { console.error(new Date().toISOString(), message); }
 function safeError(error) { return error.mediaFailure ? error.message : error.writerBusy ? '该 Codex 会话正由桌面端占用，请释放后重发，或发送 /new 开始新会话。' : error.code ? `微信接口错误 ${error.code}` : error.message?.startsWith('Codex') ? error.message : '操作失败，请在设置里查看连接状态。'; }
-async function deliver(job, text) { await client.send(job.sender, job.context, text); }
+async function deliver(job, text, options) { await client.send(job.sender, state.replyContext || job.context, text, options); }
+function notify(job, text) {
+  // Receipt I/O must not hold the receive/mutation lane or delay model execution.
+  const pending = deliver(job, text, { timeout: 8000 }).then(() => {
+    job.receipt = 'sent';
+  }, error => {
+    job.receipt = 'unknown';
+    lastError = '接收回执投递未确认，任务仍会继续；可在插件任务记录中查看。';
+    log('接收回执：' + safeError(error));
+  }).then(persist).catch(() => {
+    lastError = '本机状态保存失败，消息处理已暂停。'; polling?.abort(); log(lastError);
+  }).finally(() => { receipts.delete(job.id); });
+  receipts.set(job.id, pending);
+}
+function busy() { return worker || state.inbox.some(job => job.status === 'pending'); }
 function complete(status) { if (!current || current.settled) return; current.settled = true; clearTimeout(current.timer); clearTimeout(current.approval?.timer); current.resolve(status); }
 function decline(pending) {
   if (pending.method === 'item/permissions/requestApproval') app.respond(pending.id, { permissions: {}, scope: 'turn' });
@@ -64,7 +82,7 @@ function events(event) {
   if (!run || params.threadId !== run.threadId) return;
   if (method === 'turn/started') started(params.turn.id);
   if (run.turnId && params.turnId && run.turnId !== params.turnId) return;
-  if (method === 'item/completed' && params.item?.type === 'agentMessage' && params.item.phase !== 'commentary') run.answer = params.item.text;
+  if (method === 'item/completed' && params.item?.type === 'agentMessage' && params.item.phase !== 'commentary') run.answers.set(params.item.id || 'final', params.item.text || '');
   if (method === 'turn/completed' && (!run.turnId || params.turn.id === run.turnId)) complete(params.turn.status);
 }
 function started(id) {
@@ -92,9 +110,10 @@ async function ensureApp() {
   return app;
 }
 async function execute(job) {
-  const snapshot = { ...settings };
+  const selected = state.history.find(entry => entry.id === state.thread);
+  const snapshot = { ...settings, workspace: selected?.workspace || settings.workspace };
   const done = Promise.withResolvers();
-  const run = { job, settings: snapshot, resolve: done.resolve, answer: '', settled: false, controller: new AbortController() };
+  const run = { job, settings: snapshot, resolve: done.resolve, answers: new Map(), settled: false, controller: new AbortController() };
   current = run;
   try {
     job.mediaDirectory ||= newMediaDirectory();
@@ -128,12 +147,15 @@ async function execute(job) {
     await Promise.race([submit, done.promise]);
     const status = await done.promise;
     if (status !== 'completed') return { status, text: status === 'interrupted' ? '本轮任务已停止。' : 'Codex 执行失败，请查看本机任务记录。' };
-    const delivery = await prepareOutput(run.answer || '任务已完成。', job, snapshot, run.controller.signal);
+    await receipts.get(job.id);
+    const answer = [...run.answers.values()].filter(Boolean).join('\n\n');
+    const delivery = await prepareOutput(answer || '任务已完成。', job, snapshot, run.controller.signal);
     job.outputs = delivery.outputs;
     job.mediaErrors = [...(job.inputErrors || []), ...delivery.errors];
     await persist();
     for (const output of job.outputs) {
       try {
+        job.context = state.replyContext || job.context;
         await sendOutput(client, job, output, snapshot.maxMediaMb * 1024 * 1024, run.controller.signal, async () => { output.delivery = 'sending'; await persist(); });
         output.delivery = 'sent';
       } catch (error) {
@@ -162,15 +184,17 @@ async function drain() {
     while (account && !closing) {
       const job = state.inbox.find(item => item.status === 'pending');
       if (!job) break;
-      job.status = 'running'; await persist();
+      job.status = 'running'; job.startedAt = Date.now(); await persist();
       let answer;
       try { const outcome = await execute(job); answer = outcome.text; job.status = outcome.status; }
       catch (error) { answer = safeError(error); job.status = 'failed'; lastError = answer; log(answer); }
       job.finishedAt = Date.now(); job.result = answer;
       const entry = state.history.find(item => item.id === job.threadId);
       if (entry) entry.updatedAt = job.finishedAt;
+      job.delivery = 'sending';
       await persist();
-      try { await deliver(job, answer); job.delivery = job.mediaErrors?.length ? 'partial' : 'sent'; }
+      await receipts.get(job.id);
+      try { await deliver(job, answer); job.delivery = job.mediaErrors?.length ? 'partial' : 'sent'; job.deliveredAt = Date.now(); }
       catch (error) { job.delivery = 'unknown'; lastError = '结果投递未确认，请在插件任务记录中查看。'; log(safeError(error)); }
       await persist();
     }
@@ -179,15 +203,47 @@ async function drain() {
 }
 async function controlMessage(job) {
   const text = job.text.trim();
-  if (text === '/help') return '直接发送文字、图片、语音、视频或文件即可派任务。\n/status 查看连接与任务\n/stop 停止当前任务\n/new 开始新会话\n/history 最近会话\n/approve 验证码 批准权限\n/reject 验证码 拒绝权限';
-  if (text === '/status' || text === '/ping') return `微信已连接\n模型 ${settings.model}\n正在执行 ${current ? '是' : '否'}\n排队 ${state.inbox.filter(x => x.status === 'pending').length}\n时限 ${settings.timeoutMinutes || '不限'}${settings.timeoutMinutes ? ' 分钟' : ''}`;
+  if (text === '/help') return '直接发送文字、图片、语音、视频或文件即可派任务。\n/status 查看连接与任务\n/stop 停止当前任务\n/new 开始新会话\n/list [页码] 查看会话\n/use 序号或会话ID 切换\n/history 同 /list\n/approve 验证码 批准权限\n/reject 验证码 拒绝权限';
+  if (text === '/status' || text === '/ping') return `微信已连接\n当前会话 ${state.history.find(entry => entry.id === state.thread)?.title || '新会话（待首次任务）'}\n模型 ${settings.model}\n正在执行 ${current ? '是' : '否'}\n排队 ${state.inbox.filter(x => x.status === 'pending').length}\n时限 ${settings.timeoutMinutes || '不限'}${settings.timeoutMinutes ? ' 分钟' : ''}`;
   if (text === '/stop') return interrupt();
   if (text === '/new') {
-    if (worker || state.inbox.some(x => x.status === 'pending')) return '请先等待任务结束，或用 /stop 停止当前任务，再开始新会话。';
+    if (busy()) return '请先等待执行和排队任务结束，再开始新会话。/stop 只停止当前任务。';
     if (loadedThread && app) { await app.request('thread/unsubscribe', { threadId: loadedThread }); loadedThread = null; }
     state.thread = null; await persist(); return '已开始新会话，下一条任务使用新的上下文。';
   }
-  if (text === '/history') return state.history.slice(0, 10).map(x => `${x.title}\ncodex://threads/${x.id}`).join('\n\n') || '暂无历史。';
+  const list = text.match(/^\/(?:list|history)(?:\s+(.*))?$/);
+  if (list) {
+    const page = list[1] === undefined ? 1 : Number(list[1]);
+    const history = listHistory(state, current?.threadId).history;
+    const pages = Math.max(1, Math.ceil(history.length / 10));
+    if (!Number.isSafeInteger(page) || page < 1 || page > pages) return `页码无效，请发送 /list 1 到 /list ${pages}。`;
+    if (!history.length) return '暂无历史。直接发送任务会创建会话。';
+    // Pin displayed numbers until the next list request; activity may change meanwhile.
+    state.sessionChoices = history.map(entry => entry.id);
+    const rows = history.slice((page - 1) * 10, page * 10).map((entry, index) => `${(page - 1) * 10 + index + 1}. ${entry.current ? '【当前】' : ''}${entry.title}\nID ${entry.id}\ncodex://threads/${entry.id}`);
+    return `会话列表 ${page}/${pages}\n\n${rows.join('\n\n')}\n\n发送 /use 序号 切换，也支持完整 ID 或唯一 ID 前缀（至少 6 位）。`;
+  }
+  const use = text.match(/^\/use(?:\s+(.*))?$/);
+  if (use) {
+    if (busy()) return '请先等待执行和排队任务结束，再切换会话。/stop 只停止当前任务。';
+    const selector = use[1]?.trim();
+    if (!selector) return '用法：/list 查看会话，再发送 /use 2；也支持完整会话 ID。';
+    let candidates = state.history.filter(entry => entry.id === selector);
+    if (!candidates.length && /^\d+$/.test(selector)) candidates = state.history.filter(entry => entry.id === state.sessionChoices?.[Number(selector) - 1]);
+    if (!candidates.length && selector.length >= 6) candidates = state.history.filter(entry => entry.id.startsWith(selector));
+    if (candidates.length !== 1) return candidates.length ? 'ID 前缀匹配多个会话，请使用完整 ID。' : '未找到该会话，请发送 /list 后重新选择。';
+    const target = candidates[0];
+    if (target.id === state.thread) return `已在当前会话：${target.title}`;
+    const workspace = target.workspace || settings.workspace;
+    try { await validateSettings({ ...settings, workspace }); }
+    catch { return '该会话的工作目录不可用，请恢复目录后再切换。'; }
+    const codex = await ensureApp();
+    if (loadedThread) { await codex.request('thread/unsubscribe', { threadId: loadedThread }); loadedThread = null; }
+    // Keep the old selection if resume fails (deleted thread or another active writer).
+    await codex.request('thread/resume', { threadId: target.id, cwd: workspace, model: settings.model, sandbox: settings.sandbox, approvalPolicy: 'on-request', excludeTurns: true });
+    loadedThread = target.id; state.thread = target.id;
+    return `已切换到：${target.title}\n工作目录 ${workspace}\n后续消息将继续此会话。`;
+  }
   const match = text.match(/^\/(approve|reject)\s+(\d{6})$/);
   if (match) {
     const pending = current?.approval;
@@ -197,24 +253,36 @@ async function controlMessage(job) {
     app.respond(pending.id, pending.method === 'item/permissions/requestApproval' ? { permissions: accept ? pending.permissions || {} : {}, scope: 'turn' } : { decision: accept ? 'accept' : 'decline' });
     return accept ? '已批准本次请求。' : '已拒绝本次请求。';
   }
+  if (/^\/[a-z]+(?:\s|$)/i.test(text)) return '未知命令或格式不正确，请发送 /help。';
   return null;
 }
 async function receive(raw) {
   const job = incoming(raw);
-  if (!job || job.sender !== account?.owner || !job.context) return;
-  if (!job.id) { log('忽略缺少消息标识的入站消息'); return; }
-  if (state.seen.includes(job.id)) return;
+  if (!job || job.sender !== account?.owner) { diagnostics.ignored++; return; }
+  diagnostics.received++; diagnostics.lastReceivedAt = Date.now();
+  if (!job.id) { diagnostics.invalidId++; lastError = '入站消息缺少编号，已跳过，请重新发送。'; log(lastError); return; }
+  if (state.seen.includes(job.id)) { diagnostics.duplicates++; return; }
+  if (job.context) state.replyContext = job.context;
+  job.context ||= state.replyContext;
+  if (!job.context) { diagnostics.missingContext++; lastError = '入站消息缺少回复凭证，已跳过，请重新发送。'; log(lastError); return; }
+  let result = null;
+  if (!job.hasMedia) {
+    try { result = await controlMessage(job); }
+    catch (error) { result = safeError(error); lastError = result; log(result); }
+  }
+  if (result === null && !job.text.trim() && !job.media?.length) result = '未能识别消息内容，请发送文字、图片、语音、视频或文件。';
+  if (result === null && (job.media?.length || 0) > 4) result = '单条消息最多处理 4 个附件，请拆分发送。';
+  if (result === null && state.inbox.filter(x => ['pending', 'running'].includes(x.status)).length >= 6) result = '任务队列已满，请稍后发送。';
+  if (result === null) {
+    state.inbox = state.inbox.filter(x => ['pending', 'running', 'interrupted'].includes(x.status) || x.finishedAt > Date.now() - 7 * 86400000).slice(-199);
+    Object.assign(job, { status: 'pending', receipt: 'sending', createdAt: Date.now() });
+    state.inbox.push(job);
+  }
   state.seen.push(job.id); state.seen = state.seen.slice(-10000);
-  const result = job.hasMedia ? null : await controlMessage(job);
-  if (result !== null) { await persist(); await deliver(job, result); return; }
-  if (!job.text.trim() && !job.media?.length) { await persist(); await deliver(job, '未能识别消息内容，请发送文字、图片、语音、视频或文件。'); return; }
-  if ((job.media?.length || 0) > 4) { await persist(); await deliver(job, '单条消息最多处理 4 个附件，请拆分发送。'); return; }
-  if (state.inbox.filter(x => ['pending', 'running'].includes(x.status)).length >= 6) { await persist(); await deliver(job, '任务队列已满，请稍后发送。'); return; }
-  state.inbox = state.inbox.filter(x => ['pending', 'running', 'interrupted'].includes(x.status) || x.finishedAt > Date.now() - 7 * 86400000).slice(-200);
-  state.inbox.push({ ...job, status: 'pending', createdAt: Date.now() });
+  // Admission and deduplication are durable before any reply or task execution.
   await persist();
-  try { await deliver(job, worker ? '已接收，正在本会话中排队。' : '已接收，Codex 正在处理。'); } catch (error) { log(safeError(error)); }
-  void drain();
+  notify(job, result ?? (worker ? '已接收，正在本会话中排队。' : '已接收，Codex 正在处理。'));
+  if (result === null) void drain();
 }
 function connect() {
   polling?.abort();
@@ -225,25 +293,26 @@ function connect() {
     while (!controller.signal.aborted) {
       try {
         const batch = await client.updates(state.cursor, controller.signal);
-        connected = true; failures = 0;
         if (controller.signal.aborted) break;
+        connected = true; failures = 0; diagnostics.lastPollAt = Date.now();
         for (const message of batch.msgs || []) {
           if (controller.signal.aborted) break;
-          const pending = mutation.then(() => receive(message));
+          const pending = mutation.then(() => controller.signal.aborted ? undefined : receive(message));
           mutation = pending.catch(() => {});
           await pending;
         }
+        if (controller.signal.aborted) break;
         if (batch.get_updates_buf) { state.cursor = batch.get_updates_buf; await persist(); }
         await delay(300, undefined, { signal: controller.signal });
       } catch (error) {
-        connected = false;
         if (controller.signal.aborted) break;
+        connected = false;
         lastError = safeError(error); log(lastError);
         if (error.code === -14 || error.code === 401 || error.code === 403) { lastError = '微信授权失效或被限制，请在设置里重新连接。'; break; }
         await delay(Math.min(30000, 1000 * 2 ** Math.min(++failures, 5)), undefined, { signal: controller.signal }).catch(() => {});
       }
     }
-  })().catch(() => { lastError = '消息接收已停止，请检查本机日志。'; });
+  })().catch(() => { if (!controller.signal.aborted) { connected = false; lastError = '消息接收已停止，请检查本机日志。'; log(lastError); } });
   void drain();
 }
 async function login() {
@@ -284,8 +353,8 @@ async function login() {
 }
 function publicStatus() {
   return { connected, bound: Boolean(account), account: account ? { userId: account.owner, botId: account.bot } : null, lastError, login: session ? { active: session.active, status: session.status, image: session.image } : null,
-    settings, current: current ? { title: current.job.text.slice(0, 80), startedAt: current.job.createdAt, approval: Boolean(current.approval) } : null,
-    tasks: state.inbox.slice(-30).reverse().map(({ text, status, delivery, result, createdAt, attachments, outputs }) => ({ attachments: (attachments || []).map(({kind, name}) => ({kind, name})), outputs: (outputs || []).map(({kind, name, delivery}) => ({kind, name, delivery})), title: (text || '微信媒体任务').slice(0, 120), status, delivery, result, createdAt })), history: state.history };
+    version: '0.5.0', diagnostics: { ...diagnostics }, activeThread: state.thread, settings, current: current ? { title: current.job.text.slice(0, 80), startedAt: current.job.startedAt, approval: Boolean(current.approval) } : null,
+    tasks: state.inbox.slice(-30).reverse().map(({ text, status, receipt, delivery, result, createdAt, startedAt, finishedAt, deliveredAt, attachments, outputs }) => ({ attachments: (attachments || []).map(({kind, name}) => ({kind, name})), outputs: (outputs || []).map(({kind, name, delivery}) => ({kind, name, delivery})), title: (text || '微信媒体任务').slice(0, 120), status, receipt, delivery, result, createdAt, startedAt, finishedAt, deliveredAt })), history: state.history };
 }
 async function action(name, body) {
   if (name === 'status') return publicStatus();
@@ -301,13 +370,13 @@ async function action(name, body) {
     settings = next; return publicStatus();
   }
   if (name === 'stop') return { message: await interrupt() };
-  if (name === 'reconnect') { connect(); return publicStatus(); }
+  if (name === 'reconnect') { connected = false; lastError = ''; connect(); return publicStatus(); }
   if (name === 'logout') {
     if (worker || current || state.inbox.some(x => x.status === 'pending')) throw new Error('请先等待任务结束再断开微信');
     session?.controller.abort(); if (session) { session.active = false; session.image = null; }
     polling?.abort(); connected = false;
     await rm(home + '/account.json', { force: true }); account = null;
-    state.cursor = ''; state.thread = null; state.inbox = []; state.seen = []; await persist();
+    state.cursor = ''; state.thread = null; state.inbox = []; state.seen = []; delete state.replyContext; delete state.sessionChoices; await persist();
     app?.close(); app = null; loadedThread = null; return publicStatus();
   }
   throw new Error('不支持的操作');

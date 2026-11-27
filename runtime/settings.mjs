@@ -37,8 +37,8 @@ async function call(name, args) {
 async function dispatch(method, params) {
   const extension = { 'openai/settings': native };
   const capabilities = { tools: {}, resources: {}, extensions: extension };
-  if (method === 'server/discover') return { resultType: 'complete', supportedVersions: ['2026-07-28', '2025-11-25'], ttlMs: 0, cacheScope: 'private', _meta: { 'io.modelcontextprotocol/serverInfo': { name: 'weixin-settings', version: '0.4.0' } }, capabilities };
-  if (method === 'initialize') return { protocolVersion: params.protocolVersion, serverInfo: { name: 'weixin-settings', version: '0.4.0' }, capabilities: { ...capabilities, experimental: extension } };
+  if (method === 'server/discover') return { resultType: 'complete', supportedVersions: ['2026-07-28', '2025-11-25'], ttlMs: 0, cacheScope: 'private', _meta: { 'io.modelcontextprotocol/serverInfo': { name: 'weixin-settings', version: '0.5.0' } }, capabilities };
+  if (method === 'initialize') return { protocolVersion: params.protocolVersion, serverInfo: { name: 'weixin-settings', version: '0.5.0' }, capabilities: { ...capabilities, experimental: extension } };
   if (method === 'ping') return {};
   if (method === 'tools/list') return { tools };
   if (method === 'resources/list') return { resources: [resource, historyResource] };
