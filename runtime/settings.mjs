@@ -17,7 +17,10 @@ const tools = [
   { name: 'weixin.status', title: '读取微信状态', inputSchema: object({}), annotations: { readOnlyHint: true }, _meta: appOnly },
   ...['login', 'cancelLogin', 'reconnect', 'logout', 'stop'].map(action => ({ name: 'weixin.' + action, title: ({ login: '本人扫码连接微信', cancelLogin: '取消扫码', reconnect: '重新连接', logout: '断开微信', stop: '停止当前任务' })[action], inputSchema: object({}), annotations: { destructiveHint: action === 'logout' }, _meta: appOnly })),
   { name: 'weixin.pin', title: '提交手机验证码', inputSchema: { ...object({ pin: { type: 'string', pattern: '^\\d{4,12}$' } }), required: ['pin'] }, _meta: appOnly },
-  { name: native.updateTool, title: '保存微信设置', inputSchema: { ...object({ workspace: { type: 'string' }, model: { type: 'string' }, effort: { type: 'string' }, persona: { type: 'string' }, timeoutMinutes: { type: 'integer', minimum: 0, maximum: 1440 }, sandbox: { type: 'string', enum: ['read-only', 'workspace-write'] }, maxMediaMb: { type: 'integer', minimum: 1, maximum: 100 } }), required: ['workspace', 'model', 'effort', 'persona', 'timeoutMinutes', 'sandbox'] }, _meta: appOnly },
+  { name: native.updateTool, title: '保存微信设置', inputSchema: { ...object({ workspace: { type: 'string' }, model: { type: 'string' }, effort: { type: 'string' }, persona: { type: 'string' }, timeoutMinutes: { type: 'integer', minimum: 0, maximum: 1440 }, sandbox: { type: 'string', enum: ['read-only', 'workspace-write'] }, maxMediaMb: { type: 'integer', minimum: 1, maximum: 100 }, memoryDirectory: { type: 'string' }, memoryCapacity: { type: 'integer', minimum: 1, maximum: 1000 } }), required: ['workspace', 'model', 'effort', 'persona', 'timeoutMinutes', 'sandbox'] }, _meta: appOnly },
+  { name: 'weixin.memory.list', title: '读取本人助手记忆', inputSchema: object({}), annotations: { readOnlyHint: true }, _meta: appOnly },
+  { name: 'weixin.memory.export', title: '备份助手记忆', inputSchema: object({ format: { type: 'string', enum: ['json','md'] } }), annotations: { readOnlyHint: true }, _meta: appOnly },
+  { name: 'weixin.memory.change', title: '管理本人助手记忆', inputSchema: { ...object({ requestId: { type: 'string' }, action: { type: 'string', enum: ['add','update','delete','restore'] }, id: { type: 'string' }, text: { type: 'string' }, tags: { type: 'array', items: { type: 'string' } }, mode: { type: 'string', enum: ['always','relevant'] }, document: { type: 'string' } }), required: ['requestId','action'] }, _meta: appOnly },
   { name: 'weixin.history.open', title: '打开历史会话', inputSchema: { ...object({ id: { type: 'string' } }), required: ['id'] }, _meta: appOnly },
 ];
 async function call(name, args) {
@@ -30,15 +33,15 @@ async function call(name, args) {
     await openThread(args.id);
     return { opened: true };
   }
-  const actions = { 'weixin.status': 'status', 'weixin.settings.save': 'save', ...Object.fromEntries(['login','cancelLogin','reconnect','logout','stop','pin'].map(key => ['weixin.' + key, key])) };
+  const actions = { 'weixin.memory.list': 'memoryList', 'weixin.memory.export': 'memoryExport', 'weixin.memory.change': 'memoryChange', 'weixin.status': 'status', 'weixin.settings.save': 'save', ...Object.fromEntries(['login','cancelLogin','reconnect','logout','stop','pin'].map(key => ['weixin.' + key, key])) };
   if (!actions[name]) throw new Error('未知工具');
   return control(actions[name], args);
 }
 async function dispatch(method, params) {
   const extension = { 'openai/settings': native };
   const capabilities = { tools: {}, resources: {}, extensions: extension };
-  if (method === 'server/discover') return { resultType: 'complete', supportedVersions: ['2026-07-28', '2025-11-25'], ttlMs: 0, cacheScope: 'private', _meta: { 'io.modelcontextprotocol/serverInfo': { name: 'weixin-settings', version: '0.5.0' } }, capabilities };
-  if (method === 'initialize') return { protocolVersion: params.protocolVersion, serverInfo: { name: 'weixin-settings', version: '0.5.0' }, capabilities: { ...capabilities, experimental: extension } };
+  if (method === 'server/discover') return { resultType: 'complete', supportedVersions: ['2026-07-28', '2025-11-25'], ttlMs: 0, cacheScope: 'private', _meta: { 'io.modelcontextprotocol/serverInfo': { name: 'weixin-settings', version: '0.6.0' } }, capabilities };
+  if (method === 'initialize') return { protocolVersion: params.protocolVersion, serverInfo: { name: 'weixin-settings', version: '0.6.0' }, capabilities: { ...capabilities, experimental: extension } };
   if (method === 'ping') return {};
   if (method === 'tools/list') return { tools };
   if (method === 'resources/list') return { resources: [resource, historyResource] };

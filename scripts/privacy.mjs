@@ -12,6 +12,7 @@ export async function checkPrivacy(root) {
       const path = join(directory, entry.name);
       if (entry.isSymbolicLink()) throw new Error('公开源码包含符号链接，请核对 ' + entry.name);
       if (entry.isDirectory()) { await walk(path); continue; }
+      if (/^[0-9a-f]{64}\.json$/.test(entry.name)) throw new Error('公开源码包含账号记忆文件');
       if (privateNames.has(entry.name) || /^\.env(?:\.|$)/.test(entry.name)) throw new Error('公开源码包含本机配置文件 ' + entry.name);
       const text = await readFile(path, 'utf8');
       if (secrets.test(text) || userPaths.test(text) || text.includes(homedir() + '/')) throw new Error('公开源码可能包含凭证或本机路径，请核对 ' + entry.name);

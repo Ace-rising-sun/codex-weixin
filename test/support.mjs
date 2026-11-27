@@ -20,6 +20,7 @@ export function testControl(home, action, data = {}) {
         headers,
       },
       (response) => {
+        response.setEncoding("utf8");
         let text = "";
         response.on("data", (chunk) => (text += chunk));
         response.on("end", () => {
