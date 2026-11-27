@@ -26,5 +26,8 @@
   "repository": {
     "type": "git",
     "url": "git+https://github.com/Ace-rising-sun/codex-weixin.git"
+  },
+  "devDependencies": {
+    "tar": "7.5.24"
   }
 }

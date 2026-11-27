@@ -1,3 +1,4 @@
+import { checkPrivacy } from './privacy.mjs';
 import { readdir, readFile } from "node:fs/promises";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
@@ -37,4 +38,5 @@ for (const file of ["runtime/settings.html", "runtime/history.html"]) {
   for (const script of html.matchAll(/<script>([\s\S]*?)<\/script>/g))
     new (await import("node:vm")).Script(script[1]);
 }
+await checkPrivacy(root);
 console.log("源码语法、界面脚本、版本和可移植配置检查通过。");
